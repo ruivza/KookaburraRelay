@@ -1,0 +1,23 @@
+let ctx;
+const labels={requests:'请求日志',errors:'错误日志',audit:'审计日志',jobs:'已完成推送',metrics:'监控采样',probes:'探测记录',runs:'运行历史',expired:'过期登记与会话'};
+export function initializeMaintenance(context){ctx=context;}
+export function renderMaintenance(v){
+ const {t,esc}=ctx,s=v.settings,date=n=>n?new Date(n).toLocaleString():t('未启用');
+ return `<div class="page-heading"><div><h1>${t('存储与清理')}</h1><p>${t('按需保留记录，让网关轻装运行。')}</p></div><button data-maintenance-refresh>${t('↻ 刷新')}</button></div><div class="security-grid"><section class="panel"><div class="panel-head"><h2>${t('自动清理')}</h2></div><div class="panel-body"><form data-maintenance="settings"><label class="check"><input name="enabled" type="checkbox" ${s.enabled?'checked':''}>${t('启用自动清理')}</label><label>${t('执行间隔（小时）')}<input name="intervalHours" type="number" min="1" max="168" value="${s.intervalHours}" required></label><div class="retention-fields">${Object.entries(labels).filter(([k])=>k!=='expired').map(([k,label])=>`<label>${t(label)} · ${t('保留天数')}<input name="${k}Days" type="number" min="1" max="3650" value="${s[k+'Days']}" required></label>`).join('')}</div><button class="primary">${t('预览设置')}</button></form></div></section><section class="panel"><div class="panel-head"><h2>${t('手动清理')}</h2></div><div class="panel-body"><form data-maintenance="cleanup"><div class="retention-fields">${Object.entries(labels).map(([k,label])=>`<label class="check"><input type="checkbox" name="types" value="${k}" checked>${t(label)}</label>`).join('')}</div><label>${t('清理范围')}<select name="scope"><option value="policy">${t('按当前保留周期')}</option><option value="date">${t('指定日期之前')}</option></select></label><label data-cleanup-date hidden>${t('截止日期')}<input name="before" type="datetime-local"></label><p class="help">${t('仅清理历史记录及过期数据，保留配置、密钥和未完成任务。')}</p><button>${t('预览清理')}</button></form><hr><p class="help">${t('数据库占用')}：${(v.databaseBytes/1048576).toFixed(1)} MB<br>${t('下次自动清理')}：${esc(date(v.nextAt))}<br>${t('清理状态')}：${t(v.running?'正在清理':'空闲')}</p><p class="help">${t('删除后的数据库空间可被重新使用，磁盘文件不一定立即缩小。')}</p></div></section></div><section class="panel"><div class="panel-head"><h2>${t('清理历史')}</h2></div><div class="table-wrap"><table><thead><tr><th>${t('时间')}</th><th>${t('来源')}</th><th>${t('状态')}</th><th>${t('删除记录数')}</th></tr></thead><tbody>${v.runs.length?v.runs.map(r=>`<tr><td>${esc(date(r.started))}</td><td>${t(r.source==='manual'?'手动':'自动')}</td><td>${t(({running:'正在清理',completed:'已完成',partial:'部分完成',failed:'失败'})[r.status])}</td><td>${Object.values(r.deleted).reduce((a,b)=>a+b,0)}</td></tr>`).join(''):`<tr><td colspan="4">${t('暂无记录')}</td></tr>`}</tbody></table></div></section>`;
+}
+document.addEventListener('change',e=>{if(e.target.matches('[data-maintenance] [name="scope"]')){const form=e.target.form,custom=e.target.value==='date';form.querySelector('[data-cleanup-date]').hidden=!custom;form.elements.before.required=custom;}});
+document.addEventListener('click',e=>{if(e.target.closest('[data-maintenance-refresh]'))void ctx.load();});
+document.addEventListener('submit',e=>{
+ const form=e.target;if(!form.matches('[data-maintenance]'))return;e.preventDefault();
+ const {api,action,modal,t,notice}=ctx;
+ void action(async()=>{
+  const data=new FormData(form),mode=form.dataset.maintenance,body={mode};
+  if(mode==='settings'){body.settings={enabled:data.has('enabled')};for(const [key,value]of data)if(key!=='enabled')body.settings[key]=Number(value);}
+  else{body.types=data.getAll('types');if(data.get('scope')==='date')body.before=new Date(data.get('before')).getTime();}
+  const preview=await api('/admin/cleanup/preview','POST',body);
+  const summary=Object.entries(preview.counts).map(([k,n])=>`<div class="cleanup-count"><span>${t(labels[k])}</span><strong>${n}</strong></div>`).join('');
+  modal(t(mode==='settings'?'确认保留周期':'确认清理'),`<p class="help">${t(mode==='settings'?(body.settings.enabled?'以下记录将符合新的清理规则，保存后在下次计划执行。预览有效期为 5 分钟。':'保存后将停用自动清理，不会执行下方预览的清理。预览有效期为 5 分钟。'):'以下记录将被永久删除。预览有效期为 5 分钟。')}</p>${summary}<label class="check"><input type="checkbox" data-cleanup-confirm required>${t('我已确认清理范围')}</label>`,async()=>{await api(mode==='settings'?'/admin/settings':'/admin/cleanup/run',mode==='settings'?'PUT':'POST',{previewId:preview.previewId});notice(t(mode==='settings'?'设置已保存':'清理已开始，可刷新查看结果'));},t(mode==='settings'?'保存':'开始清理'),mode!=='settings');
+  const dialog=document.getElementById('modal'),confirm=dialog.querySelector('[data-cleanup-confirm]'),save=dialog.querySelector('button[type=submit]');
+  save.disabled=true;confirm.addEventListener('change',()=>{if(!save.dataset.busyDisabled)save.disabled=!confirm.checked;});
+ });
+});

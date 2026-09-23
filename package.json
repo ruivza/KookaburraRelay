@@ -1,0 +1,19 @@
+{
+  "name": "kookaburra-relay",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --env-file-if-exists=.env --test test/*.test.js",
+    "db:up": "docker compose -p kookaburra-relay up -d --wait",
+    "db:migrate": "node --env-file-if-exists=.env migrate-sqlite.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1137.0",
+    "pg": "^8.23.0",
+    "qrcode": "^1.5.4"
+  }
+}

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Kookaburra Relay</title>
+  <link rel="icon" type="image/png" href="/favicon.png?v=4">
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="icon-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+  <symbol id="icon-apps" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 12h8m-4-4v8"/></symbol>
+  <symbol id="icon-phone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4m-3 14h2"/></symbol>
+  <symbol id="icon-android" viewBox="0 0 24 24"><path d="m7 4-2-2m12 2 2-2M4 12V9a8 8 0 0 1 16 0v3M4 12h16v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-6ZM8 20v2m8-2v2M8 8h.01M16 8h.01"/></symbol>
+  <symbol id="icon-send" viewBox="0 0 24 24"><path d="m21 3-7 18-4-7-7-4L21 3ZM10 14 21 3"/></symbol>
+  <symbol id="icon-devices" viewBox="0 0 24 24"><rect x="3" y="3" width="11" height="17" rx="2"/><rect x="16" y="8" width="6" height="13" rx="1.5"/><path d="M7 17h3"/></symbol>
+  <symbol id="icon-monitor" viewBox="0 0 24 24"><path d="M2 12h4l3-7 5 14 3-7h5"/></symbol>
+  <symbol id="icon-logs" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8m-8 4h8m-8 4h5"/></symbol>
+  <symbol id="icon-inbox" viewBox="0 0 24 24"><path d="M4 4h16l2 11v5H2v-5L4 4ZM2 15h6l2 3h4l2-3h6"/></symbol>
+  <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></symbol>
+  <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v3"/></symbol>
+  <symbol id="icon-theme-system" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></symbol>
+  <symbol id="icon-theme-light" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+  <symbol id="icon-theme-dark" viewBox="0 0 24 24"><path d="M20.5 14A9 9 0 0 1 10 3.5 9 9 0 1 0 20.5 14Z"/></symbol>
+  <symbol id="icon-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></symbol>
+</svg>
+<div id="login-panel" class="login-layout">
+  <div class="login-toolbar"><span>Kookaburra Relay</span><div class="appearance-actions"><div class="theme-picker"><button type="button" class="theme-trigger" data-theme-trigger data-i18n-label="外观" aria-label="外观" aria-expanded="false" aria-haspopup="menu"><svg class="icon" aria-hidden="true"><use href="#icon-theme-system"></use></svg></button><div class="theme-menu" role="menu" data-i18n-label="外观" aria-label="外观" hidden><button type="button" role="menuitemradio" data-theme-option="system" aria-checked="false"><svg class="icon" aria-hidden="true"><use href="#icon-theme-system"></use></svg><span data-i18n="跟随系统">跟随系统</span><span class="theme-check" aria-hidden="true">✓</span></button><button type="button" role="menuitemradio" data-theme-option="light" aria-checked="false"><svg class="icon" aria-hidden="true"><use href="#icon-theme-light"></use></svg><span data-i18n="浅色">浅色</span><span class="theme-check" aria-hidden="true">✓</span></button><button type="button" role="menuitemradio" data-theme-option="dark" aria-checked="false"><svg class="icon" aria-hidden="true"><use href="#icon-theme-dark"></use></svg><span data-i18n="深色">深色</span><span class="theme-check" aria-hidden="true">✓</span></button></div></div><div class="language-picker"><button type="button" class="language-trigger" data-language-trigger aria-label="语言 / Language" aria-expanded="false" aria-haspopup="menu"><svg class="icon" aria-hidden="true"><use href="#icon-globe"></use></svg></button><div class="language-menu" role="menu" aria-label="语言 / Language" hidden><button type="button" role="menuitemradio" data-language="zh" aria-checked="false"><span>中文</span><span class="language-check" aria-hidden="true">✓</span></button><button type="button" role="menuitemradio" data-language="en" aria-checked="false"><span>English</span><span class="language-check" aria-hidden="true">✓</span></button></div></div></div>
+  </div>
+  <section class="login-form">
+    <div class="login-mark"><img class="brand-logo" src="/logo.png?v=2" alt="" width="64" height="64"></div>
+    <h1 data-i18n="欢迎回来">欢迎回来</h1>
+    <form id="login">
+      <label><span data-i18n="管理令牌">管理令牌</span><input id="admin-token" type="password" autocomplete="off" required data-i18n-placeholder="输入管理令牌" placeholder="输入管理令牌"></label>
+      <label id="login-factor" hidden><span data-i18n="验证码或恢复码">验证码或恢复码</span><input id="login-code" autocomplete="one-time-code" maxlength="64"></label>
+      <button class="primary" type="submit"><span data-i18n="进入控制台">进入控制台</span><span aria-hidden="true">→</span></button>
+    </form>
+  </section>
+</div>
+<div id="management" class="layout" hidden>
+  <aside class="sidebar">
+    <a class="brand" href="#overview"><span class="brand-mark"><img class="brand-logo" src="/logo.png?v=2" alt="" width="64" height="64"></span><span>Kookaburra<span class="brand-sub">Relay</span></span></a>
+    <div class="nav-caption" data-i18n="工作空间">工作空间</div>
+    <nav data-i18n-label="主要导航" aria-label="主要导航">
+      <a href="#overview" data-page="overview"><svg class="icon" aria-hidden="true"><use href="#icon-overview"></use></svg><span data-i18n="总览">总览</span></a>
+      <a href="#apps" data-page="apps"><svg class="icon" aria-hidden="true"><use href="#icon-apps"></use></svg><span data-i18n="应用管理">应用管理</span></a>
+      <div class="nav-caption" data-i18n="推送服务">推送服务</div>
+      <a href="#apns" data-page="apns"><svg class="icon" aria-hidden="true"><use href="#icon-phone"></use></svg><span data-i18n="APNs 通道">APNs 通道</span></a>
+      <a href="#android" data-page="android"><svg class="icon" aria-hidden="true"><use href="#icon-android"></use></svg><span data-i18n="Android 通道">Android 通道</span></a>
+      <a href="#deliveries" data-page="deliveries"><svg class="icon" aria-hidden="true"><use href="#icon-send"></use></svg><span data-i18n="推送记录">推送记录</span></a>
+      <a href="#devices" data-page="devices"><svg class="icon" aria-hidden="true"><use href="#icon-devices"></use></svg><span data-i18n="设备登记">设备登记</span></a>
+      <div class="nav-caption" data-i18n="可观测性">可观测性</div>
+      <a href="#monitor" data-page="monitor"><svg class="icon" aria-hidden="true"><use href="#icon-monitor"></use></svg><span data-i18n="运行监控">运行监控</span></a>
+      <a href="#logs" data-page="logs"><svg class="icon" aria-hidden="true"><use href="#icon-logs"></use></svg><span data-i18n="日志与审计">日志与审计</span></a>
+      <a href="#settings" data-page="settings"><svg class="icon" aria-hidden="true"><use href="#icon-settings"></use></svg><span data-i18n="存储与清理">存储与清理</span></a>
+      <a href="#backups" data-page="backups"><svg class="icon" aria-hidden="true"><use href="#icon-inbox"></use></svg><span data-i18n="备份与恢复">备份与恢复</span></a>
+      <a href="#security" data-page="security"><svg class="icon" aria-hidden="true"><use href="#icon-lock"></use></svg><span data-i18n="安全设置">安全设置</span></a>
+    </nav>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><div class="breadcrumb"><span id="breadcrumb">总览</span></div><div class="top-actions"><div class="theme-picker"><button type="button" class="theme-trigger" data-theme-trigger data-i18n-label="外观" aria-label="外观" aria-expanded="false" aria-haspopup="menu"><svg class="icon" aria-hidden="true"><use href="#icon-theme-system"></use></svg></button><div class="theme-menu" role="menu" data-i18n-label="外观" aria-label="外观" hidden><button type="button" role="menuitemradio" data-theme-option="system" aria-checked="false"><svg class="icon" aria-hidden="true"><use href="#icon-theme-system"></use></svg><span data-i18n="跟随系统">跟随系统</span><span class="theme-check" aria-hidden="true">✓</span></button><button type="button" role="menuitemradio" data-theme-option="light" aria-checked="false"><svg class="icon" aria-hidden="true"><use href="#icon-theme-light"></use></svg><span data-i18n="浅色">浅色</span><span class="theme-check" aria-hidden="true">✓</span></button><button type="button" role="menuitemradio" data-theme-option="dark" aria-checked="false"><svg class="icon" aria-hidden="true"><use href="#icon-theme-dark"></use></svg><span data-i18n="深色">深色</span><span class="theme-check" aria-hidden="true">✓</span></button></div></div><div class="language-picker"><button type="button" class="language-trigger" data-language-trigger aria-label="语言 / Language" aria-expanded="false" aria-haspopup="menu"><svg class="icon" aria-hidden="true"><use href="#icon-globe"></use></svg></button><div class="language-menu" role="menu" aria-label="语言 / Language" hidden><button type="button" role="menuitemradio" data-language="zh" aria-checked="false"><span>中文</span><span class="language-check" aria-hidden="true">✓</span></button><button type="button" role="menuitemradio" data-language="en" aria-checked="false"><span>English</span><span class="language-check" aria-hidden="true">✓</span></button></div></div><button id="logout" class="quiet" data-i18n="退出登录">退出登录</button></div></header>
+    <main id="content" tabindex="-1"></main>
+  </div>
+</div>
+<div id="message" class="toast" role="status" hidden></div>
+<dialog id="modal" aria-labelledby="modal-title"></dialog>
+<script type="module" src="/admin.js"></script>
+</body>
+</html>
