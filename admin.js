@@ -1,3 +1,4 @@
+import {initializeAccess,renderAccess,renderServers,renderAlerts} from './access-ui.js';
 import {initializeAbuse,renderAbuse} from './abuse-ui.js';
 import {initializeCharts,renderChart,renderStackedChart} from './monitor-charts.js';
 import {initializeBackups,renderBackups} from './backups-ui.js';
@@ -6,7 +7,7 @@ import {initializeSecurity,renderSecurity,clearSecurity} from './security-ui.js'
 import { t, html, language, locale, setLanguage, translateError } from './i18n.js';
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
-const getTitles = () => ({ abuse:t('资源保护'), overview:t('总览'), apps:t('应用管理'), apns:t('APNs 通道'), android:t('Android 通道'), deliveries:t('推送记录'), devices:t('设备登记'), monitor:t('运行监控'), logs:t('日志与审计'), backups:t('备份与恢复'), settings:t('存储与清理'), security:t('安全设置') });
+const getTitles = () => ({ access:t('接入与验证'),servers:t('服务器接入'),alerts:t('异常告警'),abuse:t('资源保护'), overview:t('总览'), apps:t('应用管理'), apns:t('APNs 通道'), android:t('Android 通道'), deliveries:t('推送记录'), devices:t('设备登记'), monitor:t('运行监控'), logs:t('日志与审计'), backups:t('备份与恢复'), settings:t('存储与清理'), security:t('安全设置') });
 let titles = getTitles();
 const getStates = () => ({ queued:[t('已入队'),'blue'], retrying:[t('等待重试'),'amber'], sending:[t('发送中'),'blue'], accepted:[t('通道已接受'),'green'], failed:[t('发送失败'),'red'], unknown:[t('结果未知'),'amber'], cancelled:[t('已取消'),''] });
 let states = getStates();
@@ -122,7 +123,7 @@ function renderMonitor(v) {
     panel(t('推送结果 · 最近 24 小时'),t('按结果更新时间统计；厂商接受不代表设备送达。'),html`<div class="panel-body">${renderStackedChart(results,resultSeries,'推送结果')}${table([t('通道'),t('已接受'),t('失败'),t('结果未知'),t('接受率')],channelRows)}${v.failures.length?html`<details data-disclosure="monitor-failures"><summary>${t('失败原因')}</summary>${table([t('通道'),t('原因'),t('数量')],v.failures.map(r=>[esc(r.channel.toUpperCase()),esc(r.reason),number(r.count)]))}<a href="#deliveries">${t('查看推送记录')}</a></details>`:''}</div>`)+
     panel(t('队列处理'),t('等待、重试与发送中使用相同统计口径；计划中的重试不算调度逾期。'),html`<div class="panel-body"><div class="metrics">${metric(t('待处理任务'),number(q.queued+q.retrying+q.sending),t('等待 / 重试 / 发送中'))}${metric(t('最老等待时间'),duration(q.oldestWaitSeconds*1000),t('包含重试等待时间'))}${metric(t('调度逾期'),number(q.overdue),t('超过计划执行时间 5 分钟'))}${metric(t('发送超时'),number(q.stuck),t('发送中超过 2 分钟'))}</div>${(!v.diagnostics.lastSampleAt||v.time-v.diagnostics.lastSampleAt>120000)?html`<p class="callout">${t('监控采样已过期')}</p>`:''}${q.workerError?html`<p class="callout">${t('队列轮询失败，请检查日志。')}</p>`:''}${renderStackedChart(v.queueSamples,queueSeries,'队列处理',60000)}<p class="help">${t('采样间隔一分钟；缺失采样不表示队列为空。')}</p></div>`)+
     panel(t('备份状态'),t('按备份周期加 1 小时宽限判断逾期；成功备份不代表已验证恢复。'),html`<div class="panel-body">${backupCard('本地备份',backup.local)}${backupCard('异地备份',backup.remote)}${!backup.workerOnline?html`<p class="callout">${t('备份进程未连接')}</p>`:''}</div>`,html`<a href="#backups">${t('备份与恢复')} →</a>`)+
-    html`<details class="panel diagnostics-panel" data-disclosure="monitor-diagnostics"><summary><span>${t('诊断详情')}</span><span class="disclosure-chevron" aria-hidden="true"></span></summary><div class="panel-body"><p>${t('本次 Uptime')} · ${duration(v.uptime)} · RSS ${(v.memory.rss/1048576).toFixed(1)} MB</p><p>${t('最近成功采样')} · ${esc(stamp(v.diagnostics.lastSampleAt))} · ${t('采样失败次数')} ${number(v.diagnostics.sampleFailures)}</p><p>${t('队列轮询失败次数')} ${number(q.workerFailures)}</p>${chart(samples,'rss',t('进程驻留内存 MB'))}${table([t('启动时间'),t('最后心跳'),t('停止时间')],v.runs.map(r=>[esc(stamp(r.started)),esc(stamp(r.heartbeat)),esc(stamp(r.stopped))]))}</div></details>`;
+    html`<details class="panel diagnostics-panel" data-disclosure="monitor-diagnostics"><summary><span>${t('诊断详情')}</span><span class="disclosure-chevron" aria-hidden="true"></span></summary><div class="panel-body"><dl class="summary-stats summary-stats-detail"><div><dt>${t('本次 Uptime')}</dt><dd>${duration(v.uptime)}</dd></div><div><dt>${t('进程驻留内存 MB')}</dt><dd>${(v.memory.rss/1048576).toFixed(1)}</dd></div><div><dt>${t('最近成功采样')}</dt><dd>${esc(stamp(v.diagnostics.lastSampleAt))}</dd></div><div><dt>${t('采样失败次数')}</dt><dd>${number(v.diagnostics.sampleFailures)}</dd></div><div><dt>${t('队列轮询失败次数')}</dt><dd>${number(q.workerFailures)}</dd></div></dl>${chart(samples,'rss',t('进程驻留内存 MB'))}${table([t('启动时间'),t('最后心跳'),t('停止时间')],v.runs.map(r=>[esc(stamp(r.started)),esc(stamp(r.heartbeat)),esc(stamp(r.stopped))]))}</div></details>`;
 }
 async function load(quiet = false) {
   if (!token) return;
@@ -137,7 +138,10 @@ async function load(quiet = false) {
     if(turn!==navigation || generation!==epoch)return;
     apps=listing.applications; catalog=listing.channels;
     let markup;
-    if(route==='abuse') { lastData=await api('/admin/abuse'); markup=renderAbuse(lastData); }
+    if(route==='access') { const id=params.get('appId')||apps[0]?.id; markup=id?renderAccess({policy:await api('/admin/apps/'+encodeURIComponent(id)+'/access'),quotas:await api('/admin/apps/'+encodeURIComponent(id)+'/quotas')},apps,id):empty(t('请先添加应用'),''); }
+    else if(route==='servers') markup=renderServers(await api('/admin/servers'));
+    else if(route==='alerts') markup=renderAlerts(await api('/admin/alerts'));
+    else if(route==='abuse') { lastData=await api('/admin/abuse'); markup=renderAbuse(lastData); }
     else if(route==='backups') { lastData=await api('/admin/backups'); markup=renderBackups(lastData); }
     else if(route==='settings') { lastData=await api('/admin/settings'); markup=renderMaintenance(lastData); }
     else if(route==='security') { lastData=await api('/admin/security'); markup=renderSecurity(lastData); }
@@ -167,21 +171,33 @@ async function load(quiet = false) {
   }
 }
 function modal(title, content, submit, button=t('保存'), danger=false) {
-  $('modal').innerHTML=html`<div class="modal-head"><h2 id="modal-title">${esc(title)}</h2><button type="button" class="quiet" data-action="close-modal" aria-label="关闭">×</button></div><form id="modal-form">${content}<div class="modal-actions"><button type="button" data-action="close-modal">取消</button><button type="submit" class="${danger?'danger':'primary'}">${esc(button)}</button></div></form>`;
+  $('modal').innerHTML=html`<div class="modal-head"><h2 id="modal-title">${esc(title)}</h2><button type="button" class="quiet modal-close" data-action="close-modal" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></div><form id="modal-form">${content}<div class="modal-actions"><button type="button" data-action="close-modal">取消</button><button type="submit" class="${danger?'danger':'primary'}">${esc(button)}</button></div></form>`;
   $('modal-form').onsubmit=event=>{event.preventDefault();void action(async()=>{await submit(event.target); $('modal').close(); $('modal').replaceChildren(); await load();});};
   $('modal').showModal();
 }
 function appModal(id) {
   const a=apps.find(a=>a.id===id);
-  modal(a?t('编辑应用'):t('添加应用'),html`<label>应用名称<input name="name" maxlength="100" value="${esc(a?.name||'')}" required></label>${a?html`<p class="help">应用 ID：${esc(a.id)}</p><label class="check"><input name="enabled" type="checkbox" ${a.enabled?'checked':''}>启用推送</label><p class="help">切换启停状态将撤销现有设备登记，重新启用后设备需重新登记。</p>`:html`<label>应用 ID<input name="id" maxlength="100" pattern="[A-Za-z0-9_-]{1,100}" placeholder="my-app" required></label><p class="help">ID 创建后不可修改，客户端与业务 Server 使用此 ID 接入。</p>`}`,async form=>{
-    const body={name:form.elements.name.value,...(a?{enabled:form.elements.enabled.checked}:{id:form.elements.id.value})};
+  const config=a?.notifications ?? {kinds:['sync'],fallback:{title:'Notification',body:'Open the app to view the update.',sound:true}};
+  const capabilities=html`<fieldset class="notification-capabilities" aria-describedby="capability-help"><legend>通知能力 <span class="capability-hint">可多选</span></legend><div class="capability-options">${[['sync',t('后台更新提醒'),t('无横幅、无声音')],['alert',t('普通通知'),t('直接显示标题和内容')],['encrypted_alert',t('加密通知'),t('由客户端解密内容')]].map(([kind,label,description])=>html`<label class="check capability-option"><input type="checkbox" name="capability" value="${kind}" ${kind==='encrypted_alert'?'aria-controls="encrypted-settings"':''} ${config.kinds.includes(kind)?'checked':''}><span><strong>${label}</strong><small>${description}</small></span></label>`).join('')}</div><p class="help" id="capability-help">选择此应用允许使用的能力，每次推送只使用一种类型。</p><p class="help">后台更新提醒不显示通知、不播放声音，系统允许时触发同步。APNs 支持全部能力；FCM 支持后台更新提醒和普通通知。新增能力需客户端申请相应授权；关闭能力仅停止该类型推送，不影响其他推送。</p></fieldset><fieldset class="encrypted-settings" id="encrypted-settings"><details><summary>高级设置 · 加密通知兜底文案</summary><p class="help">客户端未能解密时显示以下通用文案，请勿填写敏感内容。可保留默认值。</p><label>兜底标题<input name="fallbackTitle" maxlength="120" value="${esc(config.fallback.title)}"></label><label>兜底内容<input name="fallbackBody" maxlength="400" value="${esc(config.fallback.body)}"></label><p class="help">加密通知默认请求系统通知音，可在手机系统设置中关闭声音。修改兜底文案无需重新登记设备。</p></details></fieldset>`;
+  modal(a?t('编辑应用'):t('添加应用'),html`<label>应用名称<input name="name" maxlength="100" value="${esc(a?.name||'')}" required></label>${a?html`<p class="help">应用 ID：${esc(a.id)}</p><label class="check"><input name="enabled" type="checkbox" ${a.enabled?'checked':''}>启用推送</label><p class="help">切换启停状态将撤销现有设备登记，重新启用后设备需重新登记。</p>`:html`<label>应用 ID<input name="id" maxlength="100" pattern="[A-Za-z0-9_-]{1,100}" placeholder="my-app" required></label><p class="help">ID 创建后不可修改，客户端与业务 Server 使用此 ID 接入。</p>`}${capabilities}`,async form=>{
+    const notifications={kinds:[...form.querySelectorAll('[name="capability"]:checked')].map(el=>el.value),fallback:{title:form.elements.fallbackTitle.value,body:form.elements.fallbackBody.value}};
+    const body={notifications,name:form.elements.name.value,...(a?{enabled:form.elements.enabled.checked}:{id:form.elements.id.value})};
     await api('/admin/apps'+(a?'/'+encodeURIComponent(a.id):''),a?'PUT':'POST',body);notice(a?t('应用已保存'):t('应用已创建，请配置推送通道。'));
   },a?t('保存修改'):t('创建应用'));
+  const encryptedToggle=$('modal-form').querySelector('[name="capability"][value="encrypted_alert"]');
+  const syncEncryptedSettings=()=>{
+    const settings=$('encrypted-settings');
+    settings.hidden=!encryptedToggle.checked;
+    settings.disabled=!encryptedToggle.checked;
+    encryptedToggle.setAttribute('aria-expanded',String(encryptedToggle.checked));
+  };
+  encryptedToggle.addEventListener('change',syncEncryptedSettings);
+  syncEncryptedSettings();
 }
 function configure(id,kind) {
   const a=apps.find(a=>a.id===id);if(!a)return;
   const c=a[kind];
-  const content=kind==='apns'?html`<div class="form-grid"><label>Key ID<input name="keyId" pattern="[A-Z0-9]{10}" maxlength="10" value="${esc(c.keyId)}" required></label><label>Team ID<input name="teamId" pattern="[A-Z0-9]{10}" maxlength="10" value="${esc(c.teamId)}" required></label></div><label>Bundle ID<input name="topic" value="${esc(c.topic)}" pattern="[A-Za-z0-9.-]{1,255}" required placeholder="com.example.app"></label><label>密钥允许的环境<select name="environment">${[['production',t('生产')],['sandbox',t('开发')],['both',t('开发与生产')]].map(([v,n])=>option(v,n,c.environment)).join('')}</select></label><label>私钥文件（.p8）<input type="file" name="file" accept=".p8" ${c.hasKey?'':'required'}></label>`:html`<p class="help">当前 Firebase 项目：${esc(c.projectId||t('尚未配置'))}<br>服务账号：${esc(c.clientEmail||'—')}</p><label>Firebase 服务账号 JSON<input type="file" name="file" accept=".json,application/json" ${c.hasKey?'':'required'}></label>`;
+  const content=kind==='apns'?html`<div class="form-grid"><label>Key ID<input name="keyId" pattern="[A-Z0-9]{10}" maxlength="10" value="${esc(c.keyId)}" required></label><label>Team ID<input name="teamId" pattern="[A-Z0-9]{10}" maxlength="10" value="${esc(c.teamId)}" required></label></div><label>Bundle ID<input name="topic" value="${esc(c.topic)}" pattern="[A-Za-z0-9.-]{1,255}" required placeholder="com.example.app"></label><label>密钥允许的环境<select name="environment">${[['production',t('生产')],['sandbox',t('开发')],['both',t('开发与生产')]].map(([v,n])=>option(v,n,c.environment)).join('')}</select></label><label>私钥文件（.p8）<input type="file" name="file" accept=".p8" ${c.hasKey?'':'required'}></label>`:html`<dl class="summary-list"><div><dt>当前 Firebase 项目</dt><dd>${esc(c.projectId||t('尚未配置'))}</dd></div><div><dt>服务账号</dt><dd>${esc(c.clientEmail||'—')}</dd></div></dl><label>Firebase 服务账号 JSON<input type="file" name="file" accept=".json,application/json" ${c.hasKey?'':'required'}></label>`;
   modal(html`${kind.toUpperCase()} · ${a.name}`,content+html`<label class="check"><input name="enabled" type="checkbox" ${!c.hasKey||c.enabled?'checked':''}>启用通道</label><p class="help">${c.hasKey?t('文件留空保留已有私钥。'):''}凭据加密保存，不会回显。配置变更会撤销本应用现有设备登记及未完成任务。</p>`,async form=>{
     const body={enabled:form.elements.enabled.checked}, file=form.elements.file.files[0];
     if(file && file.size>16384)throw Error(t('密钥文件不能超过 16 KiB'));
@@ -191,7 +207,7 @@ function configure(id,kind) {
   });
 }
 function inspect(title, pairs, extra = '') {
-  $('modal').innerHTML=html`<div class="modal-head"><h2 id="modal-title">${esc(title)}</h2><button class="quiet" data-action="close-modal" aria-label="关闭">×</button></div><div class="kv">${pairs.map(([label,value])=>html`<span>${esc(label)}</span><strong>${esc(value)}</strong>`).join('')}</div>${extra}<div class="modal-actions"><button data-action="close-modal">关闭</button></div>`;
+  $('modal').innerHTML=html`<div class="modal-head"><h2 id="modal-title">${esc(title)}</h2><button class="quiet modal-close" data-action="close-modal" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></div><div class="kv">${pairs.map(([label,value])=>html`<span>${esc(label)}</span><strong>${esc(value)}</strong>`).join('')}</div>${extra}<div class="modal-actions"><button data-action="close-modal">关闭</button></div>`;
   $('modal').showModal();
 }
 function confirmAction(title, description, path, method='DELETE', body) {
@@ -406,3 +422,5 @@ initializeMaintenance({t,esc,api,action,modal,notice,load});
 initializeBackups({t,esc,stamp,api,action,notice,load});
 
 initializeAbuse({t,esc,api,action,notice,load});
+
+initializeAccess({t,esc,api,action,notice,load,modal});

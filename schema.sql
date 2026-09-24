@@ -36,3 +36,28 @@ ALTER TABLE backup_jobs ADD COLUMN IF NOT EXISTS remote_version TEXT;
 
 CREATE TABLE IF NOT EXISTS gateway_queue_samples(time BIGINT PRIMARY KEY,queued BIGINT NOT NULL,retrying BIGINT NOT NULL,sending BIGINT NOT NULL,oldest_wait_seconds DOUBLE PRECISION NOT NULL);
 CREATE INDEX IF NOT EXISTS delivery_result_time ON delivery_jobs(updated) WHERE state IN ('accepted','failed','unknown');
+
+ALTER TABLE registrations ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'sync';
+ALTER TABLE delivery_jobs ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'sync';
+ALTER TABLE delivery_jobs ADD COLUMN IF NOT EXISTS notification TEXT;
+ALTER TABLE delivery_jobs ADD COLUMN IF NOT EXISTS notification_hash TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS application_notifications(app_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,settings JSONB NOT NULL);
+ALTER TABLE registrations ADD COLUMN IF NOT EXISTS kinds JSONB NOT NULL DEFAULT '["sync"]';
+ALTER TABLE delivery_jobs ADD COLUMN IF NOT EXISTS notification_sealed INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS application_quotas(app_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,settings JSONB NOT NULL);
+CREATE TABLE IF NOT EXISTS access_policies(app_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,settings JSONB NOT NULL,revision TEXT NOT NULL,google_secret TEXT);
+CREATE TABLE IF NOT EXISTS trusted_servers(id TEXT PRIMARY KEY,name TEXT NOT NULL,state TEXT NOT NULL,credential_hash TEXT UNIQUE,apps JSONB NOT NULL,revision TEXT NOT NULL,created BIGINT NOT NULL);
+CREATE TABLE IF NOT EXISTS server_tickets(hash TEXT PRIMARY KEY,server_id TEXT NOT NULL,app_id TEXT NOT NULL,device_id TEXT NOT NULL,revision TEXT NOT NULL,expires BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS server_ticket_expiry ON server_tickets(expires);
+CREATE TABLE IF NOT EXISTS integrity_challenges(id TEXT PRIMARY KEY,app_id TEXT NOT NULL,channel TEXT NOT NULL,binding TEXT NOT NULL,payload TEXT NOT NULL,revision TEXT NOT NULL,expires BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS integrity_challenge_expiry ON integrity_challenges(expires);
+CREATE TABLE IF NOT EXISTS integrity_keys(app_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,key_id TEXT NOT NULL,public_key TEXT NOT NULL,counter BIGINT NOT NULL,revision TEXT NOT NULL,expires BIGINT NOT NULL,PRIMARY KEY(app_id,key_id));
+CREATE INDEX IF NOT EXISTS integrity_key_expiry ON integrity_keys(expires);
+ALTER TABLE registrations ADD COLUMN IF NOT EXISTS trusted_server TEXT;
+CREATE TABLE IF NOT EXISTS abuse_events(time BIGINT NOT NULL,reason TEXT NOT NULL,count BIGINT NOT NULL,PRIMARY KEY(time,reason));
+CREATE TABLE IF NOT EXISTS alert_settings(id INTEGER PRIMARY KEY CHECK(id=1),settings JSONB NOT NULL,secret TEXT,revision TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS alert_incidents(kind TEXT PRIMARY KEY,active INTEGER NOT NULL,last_queued BIGINT NOT NULL);
+CREATE TABLE IF NOT EXISTS alert_notifications(id TEXT PRIMARY KEY,created BIGINT NOT NULL,kind TEXT NOT NULL,state TEXT NOT NULL,payload JSONB NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_at BIGINT NOT NULL,revision TEXT NOT NULL,error TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS alert_notification_due ON alert_notifications(state,next_at);

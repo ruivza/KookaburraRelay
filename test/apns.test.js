@@ -76,6 +76,10 @@ test("APNs uses ES256, cached JWT and private background HTTP/2 payload", async 
       ),
       true,
     );
+    await provider.send(device, "ab".repeat(32), { aps: { alert: { title: "New mail" }, sound: "default" } });
+    assert.equal(requests.at(-1).headers["apns-push-type"], "alert");
+    assert.equal(requests.at(-1).headers["apns-priority"], "10");
+    assert.equal(requests.at(-1).headers["apns-collapse-id"], "relay-alert");
     now += 50 * 60000;
     assert.notEqual(provider.authorization(), parts.join("."));
   } finally {

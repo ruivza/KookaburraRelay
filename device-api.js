@@ -1,11 +1,16 @@
 import { defaultApp, validID } from './applications.js';
+import { requestedKinds } from './notification.js';
 import { channelCatalog } from './channels.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 const fail = (status, message) => { throw Object.assign(Error(message), { status }); };
-export async function deviceAPI({ req, path, body, send, applications, db, queue, now, limit, hash, secret, seal, open, bearer, device, abuse }) {
+export async function deviceAPI({ req, path, body, send, applications, db, queue, now, limit, hash, secret, seal, open, bearer, device, abuse, access }) {
       if (path === "/v1/registrations" && req.method === "POST") {
         const appId = body.appId ?? defaultApp;
         const channel = body.channel ?? "apns";
+        const kinds = requestedKinds(body);
+        const purpose = body.purpose ?? (kinds.length === 1 ? kinds[0] : 'scoped');
+        const supported = channelCatalog.find(c => c.id === channel)?.kinds ?? [];
+        if (kinds.some(k => !supported.includes(k))) fail(501, 'Notification kind not supported by channel');
         if (!channelCatalog.some(c => c.id === channel && c.platform === (body.platform ?? "ios") && c.implemented))
           fail(501, "Push channel not implemented");
         req.gatewayScope = { appId, channel };
@@ -35,19 +40,26 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
             normalizedToken,
         );
         (await limit("enroll-token:" + tokenHash, 6));
+        const accessGrant = await access.prepareRegistration(body, req.clientAddress);
         const route = await applications.resolve(appId, channel, body.environment);
+        const enabled = await applications.capabilities(appId,channel);
+        if (kinds.some(k => !enabled.includes(k))) fail(403, 'Notification capability disabled for application');
         id = randomUUID();
         const challenge = secret();
         const expiresAt = now() + 300000;
         await db.transaction(async () => {
         await db.query('SELECT pg_advisory_xact_lock(72841104)');
+        await access.commitRegistration(body, accessGrant);
+        if (!await applications.current({app_id:appId,app_revision:route.revision})) fail(409, 'Application configuration changed');
+        const currentKinds = await applications.capabilities(appId,channel);
+        if (kinds.some(k => !currentKinds.includes(k))) fail(403, 'Notification capability disabled for application');
         (await db.prepare(
           "DELETE FROM registrations WHERE token_hash=? AND delivery_hash IS NULL",
         ).run(tokenHash));
         await abuse.registration(appId);
         (await db.prepare(
-          `INSERT INTO registrations(id,device_id,server_id,token,token_hash,environment,nonce,challenge_hash,expires,app_id,channel,app_revision)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO registrations(id,device_id,server_id,token,token_hash,environment,nonce,challenge_hash,expires,app_id,channel,app_revision,purpose,kinds,trusted_server)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?)`,
         ).run(
           id,
           body.deviceId,
@@ -61,6 +73,9 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
           appId,
           channel,
           route.revision,
+          purpose,
+          JSON.stringify(kinds),
+          accessGrant.server?.id ?? null,
         ));
         });
         const result = await route.adapter.send(
@@ -83,7 +98,8 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
           },
         );
         if (
-          !(await applications.current({ app_id: appId, app_revision: route.revision }))
+          !(await applications.current({ app_id: appId, app_revision: route.revision })) ||
+          !(await db.prepare("SELECT 1 FROM registrations WHERE id=?").get(id))
         ) {
           (await db.prepare("DELETE FROM registrations WHERE id=?").run(id));
           fail(409, "Application configuration changed");
@@ -123,9 +139,13 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
         req.gatewayScope = { appId: entry.app_id, channel: entry.channel };
         if (entry.credentials)
           return JSON.parse(open(entry.credentials));
+        const enabled = await applications.capabilities(entry.app_id,entry.channel);
+        if ((entry.kinds ?? ['sync']).some(k => !enabled.includes(k))) fail(403, 'Notification capability disabled for application');
         const credentials = {
           registrationId: entry.id,
           appId: entry.app_id,
+          purpose: entry.purpose,
+          kinds: entry.kinds,
           credential: secret(),
           revokeToken: secret(),
           expiresAt: now() + 30 * 86400000,
@@ -171,8 +191,8 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
         await limit('send-app:' + entry.app_id, 60000);
         await limit('send-device:' + entry.id, 1200);
         if (path === "/v1/validate") return send(200, { valid: true });
-        if (path === '/v1/jobs') return send(202, queue.public((await queue.enqueue(entry, { requestId: body.requestId }))));
-        const job = await queue.legacy(entry);
+        if (path === '/v1/jobs') return send(202, queue.public((await queue.enqueue(entry, { requestId: body.requestId, kind: body.kind, notification: body.encryptedNotification, alert: body.alert }))));
+        const job = await queue.legacy(entry, body.kind, body.encryptedNotification, body.alert);
         if (job.state === 'cancelled') return send(410, { reason: 'registration_invalid', taskId: job.id });
         if (job.state === 'accepted') return send(200, { accepted: true, taskId: job.id });
         if (job.reason === 'GatewayQuota') throw Object.assign(Error('Gateway resource limit'), {
@@ -186,6 +206,7 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
         if (!/^[A-Za-z0-9_-]{43}$/.test(bearer(req))) fail(410, 'Registration expired or revoked');
         const entry = (await db.prepare('SELECT * FROM registrations WHERE delivery_hash=? AND expires>?').get(hash(bearer(req)), now()));
         if (!entry || !(await applications.current(entry))) fail(410, 'Registration expired or revoked');
+        await access.delivery(req,entry);
         const job = (await queue.get(task[1]));
         if (!job || job.registration_id !== entry.id) fail(404, 'Task not found');
         return send(200, queue.public(job));

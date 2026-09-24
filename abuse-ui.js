@@ -17,8 +17,7 @@ export function renderAbuse(v) {
     <p class="help">${t('日额度按 UTC 零点重置；修改设置不会清空已用额度。每应用使用相同的独立额度。')}</p>
     <button class="primary" type="submit">${t('保存')}</button></form></div></section>
     <section class="panel"><div class="panel-head"><h2>${t('本次运行的保护统计')}</h2></div><div class="panel-body">
-    <p>${t('正在处理请求')}：${v.activeRequests} · ${t('正在发送挑战')}：${v.activeChallenges}</p>
-    <p>${t('省略的请求日志')}：${v.droppedLogs} · ${t('资源清理失败')}：${v.cleanupFailures}</p>
+    <dl class="summary-stats">${[['正在处理请求',v.activeRequests],['正在发送挑战',v.activeChallenges],['省略的请求日志',v.droppedLogs],['资源清理失败',v.cleanupFailures]].map(([label,value])=>`<div><dt>${t(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>
     <p class="help">${t('请求日志最多每分钟 120 条，最多并行写入 8 条；管理审计独立保留。统计在重启后归零。')}</p>
     <div class="table-wrap"><table><thead><tr><th>${t('拒绝原因')}</th><th>${t('数量')}</th></tr></thead><tbody>
     ${Object.entries(v.rejections).map(([key, count]) => `<tr><td>${esc(t(key))}</td><td>${count}</td></tr>`).join('') || `<tr><td colspan="2">${t('暂无记录')}</td></tr>`}

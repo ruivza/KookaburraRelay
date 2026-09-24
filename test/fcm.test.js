@@ -32,6 +32,13 @@ test('FCM signs OAuth JWT, shares token refresh, preserves token case and classi
   assert.equal(sent[0].message.token,'AbC_Token');
   assert.deepEqual(JSON.parse(sent[0].message.data.perchRegistration),{id:'proof'});
   assert.equal(sent[1].message.android.priority,'normal');
+  assert.equal((await provider.send(target,'AbC_Token',{kind:'alert',alert:{title:'Reminder',body:'Meeting starts',sound:false}})).status,200);
+  assert.deepEqual(sent[2].message.notification,{title:'Reminder',body:'Meeting starts'});
+  assert.equal(sent[2].message.android.priority,'high');
+  assert.equal(sent[2].message.android.notification.default_sound,false);
+  assert.equal(JSON.parse(sent[2].message.data.relay).appId,'notes');
+  assert.equal((await provider.send(target,'AbC_Token',{kind:'encrypted_alert'})).reason,'UnsupportedMessage');
+  assert.equal(sent.length,3);
   error=true;assert.equal((await provider.send(target,'AbC_Token',{kind:'sync'})).reason,'UNREGISTERED');
   provider.close();
 });

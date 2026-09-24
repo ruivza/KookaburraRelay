@@ -16,6 +16,7 @@ export class AbuseProtection {
   constructor({ db, now = Date.now }) {
     Object.assign(this, { db, now });
     this.settings = { ...abuseDefaults };
+    this.pendingRejections = new Map();
     this.buckets = new Map(); this.rejections = Object.create(null);
     this.requests = 0; this.challenges = 0; this.logWrites = 0; this.droppedLogs = 0;
   }
@@ -35,6 +36,37 @@ export class AbuseProtection {
     }
     return result;
   }
+  async effective(appId) {
+    const row = await this.db.prepare('SELECT settings FROM application_quotas WHERE app_id=?').get(appId);
+    return { ...this.settings, ...row?.settings };
+  }
+  async appSettings(appId) {
+    if (!await this.db.prepare('SELECT 1 FROM applications WHERE id=?').get(appId))
+      throw Object.assign(Error('Application not found'), {status:404});
+    const row = await this.db.prepare('SELECT settings FROM application_quotas WHERE app_id=?').get(appId);
+    return { overrides: row?.settings || {}, effective: await this.effective(appId) };
+  }
+  async saveApp(appId, input) {
+    await this.appSettings(appId);
+    const allowed = ['registrationEnabled','registrationAppMinute','challengeAppDay','pendingApp','taskAppDay','taskDeviceDay','attemptAppDay'];
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(k => !allowed.includes(k)))
+      throw Object.assign(Error('Invalid application quotas'), {status:400});
+    this.validate(input);
+    await this.db.prepare('INSERT INTO application_quotas VALUES(?,?) ON CONFLICT(app_id) DO UPDATE SET settings=excluded.settings').run(appId,JSON.stringify(input));
+    return this.appSettings(appId);
+  }
+  async flushRejections() {
+    const snapshot = [...this.pendingRejections];
+    if (!snapshot.length) return;
+    await this.db.transaction(async () => {
+      for (const [reason,count] of snapshot) await this.db.prepare(`INSERT INTO abuse_events VALUES(?,?,?)
+        ON CONFLICT(time,reason) DO UPDATE SET count=abuse_events.count+excluded.count`).run(Math.floor(this.now()/60000)*60000,reason,count);
+    });
+    for (const [reason,count] of snapshot) {
+      const remaining = this.pendingRejections.get(reason)-count;
+      if (remaining) this.pendingRejections.set(reason,remaining); else this.pendingRejections.delete(reason);
+    }
+  }
   async save(input) {
     const settings = this.validate(input);
     await this.db.prepare('UPDATE abuse_settings SET settings=? WHERE id=1').run(JSON.stringify(settings));
@@ -48,6 +80,7 @@ export class AbuseProtection {
   }
   reject(reason, retryAfter = 60, status = 429) {
     this.rejections[reason] = (this.rejections[reason] || 0) + 1;
+    this.pendingRejections.set(reason, (this.pendingRejections.get(reason) || 0) + 1);
     throw Object.assign(Error('Gateway resource limit'), { status, reason, retryAfter: Math.max(1, Math.ceil(retryAfter)) });
   }
   memory(key, maximum, window = 60000) {
@@ -88,8 +121,8 @@ export class AbuseProtection {
     if (!row) this.reject(reason, (start + window - time) / 1000);
   }
   async registration(appId) {
-    if (!this.settings.registrationEnabled) this.reject('registration_paused', 300, 503);
-    const s = this.settings;
+    const s = await this.effective(appId);
+    if (!this.settings.registrationEnabled || !s.registrationEnabled) this.reject('registration_paused', 300, 503);
     await this.quota('registration:global', s.registrationGlobalMinute, 60000, 'registration_global');
     await this.quota('registration:app:' + appId, s.registrationAppMinute, 60000, 'registration_app');
     await this.quota('challenge:global', s.challengeGlobalDay, DAY, 'challenge_global_day');
@@ -99,7 +132,7 @@ export class AbuseProtection {
     if (counts.total >= s.pendingGlobal || counts.app >= s.pendingApp) this.reject('registration_capacity', 60, 503);
   }
   async task(entry) {
-    const s = this.settings;
+    const s = await this.effective(entry.app_id);
     await this.quota('task:global', s.taskGlobalDay, DAY, 'task_global_day');
     await this.quota('task:app:' + entry.app_id, s.taskAppDay, DAY, 'task_app_day');
     // The token hash includes app/channel/environment; re-enrolling cannot reset this quota.
@@ -108,7 +141,7 @@ export class AbuseProtection {
   async attempt(entry) {
     await this.db.transaction(async () => {
       await this.quota('attempt:global', this.settings.attemptGlobalDay, DAY, 'attempt_global_day');
-      await this.quota('attempt:app:' + entry.app_id, this.settings.attemptAppDay, DAY, 'attempt_app_day');
+      await this.quota('attempt:app:' + entry.app_id, (await this.effective(entry.app_id)).attemptAppDay, DAY, 'attempt_app_day');
     });
   }
   async log(work) {
@@ -119,6 +152,8 @@ export class AbuseProtection {
   async cleanup() {
     if (this.cleaning) return this.cleaning;
     this.cleaning = (async () => {
+      await this.flushRejections();
+      await this.db.prepare('DELETE FROM abuse_events WHERE time<?').run(this.now()-7*DAY);
       await this.db.prepare('DELETE FROM abuse_quotas WHERE expires<=?').run(this.now());
       await this.db.prepare('DELETE FROM limits WHERE start<?').run(this.now() - 3600000);
       await this.db.transaction(async () => {
@@ -132,5 +167,5 @@ export class AbuseProtection {
     })();
     try { await this.cleaning; } finally { this.cleaning = null; }
   }
-  async close() { clearInterval(this.timer); await this.cleaning; }
+  async close() { clearInterval(this.timer); await this.cleaning; await this.flushRejections(); }
 }

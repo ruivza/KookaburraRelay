@@ -8,9 +8,9 @@ export const channelCatalog = [
     platform: "ios",
     name: "Apple APNs",
     implemented: true,
-    kinds: ["sync"],
+    kinds: ["sync", "alert", "encrypted_alert"],
   },
-  { id: "fcm", platform: "android", name: "Google FCM", implemented: true, kinds: ["sync"] },
+  { id: "fcm", platform: "android", name: "Google FCM", implemented: true, kinds: ["sync", "alert"] },
   ...Object.entries({
 
     huawei: "华为",
@@ -32,10 +32,22 @@ export class APNsChannel {
     this.provider = factory(config);
   }
   send(target, token, message) {
-    if (!["challenge", "sync"].includes(message.kind))
+    if (!["challenge", "sync", "alert", "encrypted_alert"].includes(message.kind))
       throw Object.assign(Error("Push message kind not implemented"), {
         status: 501,
       });
+    if (["alert", "encrypted_alert"].includes(message.kind)) {
+      const encrypted = message.kind === "encrypted_alert";
+      const content = encrypted ? message.fallback : message.alert;
+      const payload = {
+        aps: {alert:{title:content.title,body:content.body},...(encrypted || content.sound ? {sound:"default"} : {}),
+          "content-available":1,...(encrypted ? {"mutable-content":1} : {})},
+        relay:{version:1,deviceId:target.device_id,appId:target.app_id,serverId:target.server_id,kind:message.kind},
+        ...(encrypted && message.encryptedNotification ? {encryptedNotification:message.encryptedNotification} : {})
+      };
+      if (Buffer.byteLength(JSON.stringify(payload)) > 4096) return Promise.resolve({status:400,reason:'PayloadTooLarge'});
+      return this.provider.send({id:target.device_id,push_environment:target.environment},token,payload);
+    }
     const payload =
       message.kind === "challenge"
         ? { aps: { "content-available": 1 }, perchRegistration: message.proof }

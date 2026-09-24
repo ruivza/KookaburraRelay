@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 const marker = 'kookaburra-relay-master-key-v1';
 const encryptedColumns = [
+  ['access_policies', 'google_secret'], ['alert_settings', 'secret'],
   ['backup_settings', 'secret'], ['configuration', 'secret'], ['applications', 'secret'], ['app_channels', 'secret'],
   ['registrations', 'token'], ['registrations', 'credentials'],
   ['admin_security', 'totp_secret'], ['admin_security', 'pending_secret'],

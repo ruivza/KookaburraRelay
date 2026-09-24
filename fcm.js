@@ -54,15 +54,16 @@ export class FCMChannel {
     try { return await this.authorizing; } finally { this.authorizing = null; }
   }
   async send(target, token, message) {
-    if (!['challenge', 'sync'].includes(message.kind)) return { status: 400, reason: 'UnsupportedMessage' };
+    if (!['challenge', 'sync', 'alert'].includes(message.kind)) return { status: 400, reason: 'UnsupportedMessage' };
     try {
       const access = await this.authorization();
       const data = message.kind === 'challenge'
         ? { perchRegistration: JSON.stringify(message.proof) }
+        : message.kind === 'alert' ? {relay:JSON.stringify({version:1,deviceId:target.device_id,appId:target.app_id,serverId:target.server_id,kind:'alert'})}
         : { perch: JSON.stringify({ version: 1, deviceId: target.device_id, appId: target.app_id }) };
       const { response, body } = await this.request(`https://fcm.googleapis.com/v1/projects/${this.config.projectId}/messages:send`, {
         method: 'POST', headers: { Authorization: 'Bearer ' + access, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: { token, data, android: { priority: 'normal', ttl: message.kind === 'challenge' ? '300s' : '3600s', collapse_key: message.kind === 'challenge' ? 'perch-enroll' : 'perch-sync' } } }),
+        body: JSON.stringify({ message: { token, data, ...(message.kind === 'alert' ? {notification:{title:message.alert.title,body:message.alert.body}} : {}), android: { priority: message.kind === 'alert' ? 'high' : 'normal', ...(message.kind === 'alert' ? {notification:{default_sound:message.alert.sound}} : {}), ttl: message.kind === 'challenge' ? '300s' : '3600s', collapse_key: message.kind === 'challenge' ? 'perch-enroll' : message.kind === 'alert' ? 'relay-alert' : 'perch-sync' } } }),
       });
       if (response.status === 401) this.accessToken = null;
       const reason = body.error?.details?.find(item => item['@type'] === 'type.googleapis.com/google.firebase.fcm.v1.FcmError')?.errorCode;

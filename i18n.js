@@ -1,6 +1,89 @@
 // Only developer-authored strings and template literal segments are translated.
 // Values interpolated into html (application names, IDs, logs) remain untouched.
 const english = Object.fromEntries(`
+名称|Name
+接入与验证|Access and verification
+服务器接入|Server access
+异常告警|Alerts
+应用真实性与服务器资格|App integrity and server eligibility
+只允许已批准的服务器|Require approved servers
+iOS 必须通过 App Attest|Require App Attest for iOS
+Android 必须通过 Play Integrity|Require Play Integrity for Android
+App Attest 环境|App Attest environment
+Android 包名|Android package name
+签名证书 SHA-256（Base64URL，每行一个）|Signing certificate SHA-256 (Base64URL, one per line)
+Google 服务账号 JSON（留空保留）|Google service account JSON (leave blank to retain)
+Google 验证凭据已配置|Google verification credentials configured
+Google 验证凭据未配置|Google verification credentials not configured
+保存验证策略会撤销此应用的设备登记和待发送任务，客户端需要重新登记。|Saving the policy revokes this app's registrations and pending jobs. Clients must register again.
+保存验证策略|Save verification policy
+此应用的独立额度|Quotas for this app
+新登记|New registrations
+继承全局|Inherit defaults
+允许|Allow
+暂停|Pause
+每分钟登记|Registrations per minute
+每日挑战|Challenges per day
+待确认登记|Pending registrations
+每日新任务|New jobs per day
+每设备每日任务|Jobs per device per day
+每日发送尝试|Delivery attempts per day
+留空继承全局默认值；全局总额度和暂停开关始终生效。修改不会清空已用额度。|Leave blank to inherit defaults. Global limits and pause always apply. Changes do not reset usage.
+保存额度|Save quotas
+允许的应用 ID（逗号分隔）|Allowed app IDs (comma separated)
+填写业务 Server 已有的 Server ID。登记后处于待审批状态，批准时生成一次性显示的专用凭证。|Enter the business server's existing Server ID. Approval creates a dedicated credential shown once.
+登记待审批服务器|Register server for approval
+待审批|Pending approval
+已批准|Approved
+已封禁|Blocked
+批准|Approve
+轮换凭证|Rotate credential
+封禁|Block
+暂无记录|No records
+五分钟拒绝次数|Rejections in five minutes
+队列积压数量|Queued jobs
+最老任务等待秒数|Oldest job wait in seconds
+五分钟失败次数|Failures in five minutes
+重复告警间隔秒数|Repeat interval in seconds
+启用自动告警|Enable automatic alerts
+HMAC 签名密钥（可选，留空保留）|HMAC signing secret (optional, leave blank to retain)
+Webhook 已配置，留空保留地址|Webhook configured; leave the URL blank to retain it
+Webhook 尚未配置|Webhook not configured
+每分钟检查一次，发送异常及恢复通知。失败最多尝试六次；接收方应按事件 ID 去重。修改配置取消旧的待发告警。|Checked every minute with incident and recovery notifications. Up to six delivery attempts; receivers should deduplicate by event ID. Configuration changes cancel pending alerts.
+最近告警|Recent alerts
+告警检查失败，请检查服务日志|Alert check failed; check service health
+尝试次数|Attempts
+设置已保存|Settings saved
+保存服务器凭证|Save server credential
+仅显示一次。放入业务 Server 的 GATEWAY_SERVER_CREDENTIAL，不要发送给客户端。此次操作已撤销该服务器的旧设备登记。|Shown once. Store in the business server's GATEWAY_SERVER_CREDENTIAL and keep it out of clients. This operation revoked the server's old registrations.
+服务器已封禁，设备登记已撤销|Server blocked and registrations revoked
+请先添加应用|Add an app first
+
+可多选|Select multiple
+后台同步数据|Sync data in the background
+直接显示标题和内容|Show title and message directly
+由客户端解密内容|Content decrypted by the client
+选择此应用允许使用的能力，每次推送只使用一种类型。|Choose the capabilities allowed for this app. Each push uses one type.
+加密通知设置|Encrypted notification settings
+客户端未能解密时显示以下通用文案，请勿填写敏感内容。可保留默认值。|This generic text is shown if the client cannot decrypt the notification. Do not include sensitive content. You can keep the defaults.
+兜底标题|Fallback title
+兜底内容|Fallback message
+播放通知声音|Play notification sound
+声音仍受设备的通知权限、静音和专注模式影响。修改加密通知设置后设备需要重新登记。|Sound depends on device notification permissions, silent mode and Focus. Changing encrypted notification settings requires devices to register again.
+后台更新提醒|Background update hints
+无横幅、无声音|No banner or sound
+后台更新提醒不显示通知、不播放声音，系统允许时触发同步。APNs 支持全部能力；FCM 支持后台更新提醒和普通通知。新增能力需客户端申请相应授权；关闭能力仅停止该类型推送，不影响其他推送。|Background update hints show no notification and play no sound. They trigger sync when the system allows it. APNs supports all capabilities; FCM supports background update hints and standard notifications. New capabilities require client authorization. Disabling a capability stops only that notification type.
+高级设置 · 加密通知兜底文案|Advanced settings · Encrypted notification fallback
+加密通知默认请求系统通知音，可在手机系统设置中关闭声音。修改兜底文案无需重新登记设备。|Encrypted notifications request the system sound, which can be disabled in device settings. Changing fallback text does not require device registration again.
+通知能力|Notification capabilities
+静默更新|Silent updates
+普通通知|Standard notifications
+加密通知|Encrypted notifications
+APNs 支持全部能力；FCM 支持静默更新和普通通知。修改能力后设备需要重新登记。|APNs supports all capabilities; FCM supports silent updates and standard notifications. New capabilities require client authorization. Disabling a capability stops only that notification type.
+加密通知默认标题|Encrypted notification fallback title
+加密通知默认内容|Encrypted notification fallback message
+加密通知播放声音|Play a sound for encrypted notifications
+
 资源保护|Resource protection
 限制登记与投递资源；暂停登记不影响已有设备确认和投递。|Bound registration and delivery resources. Pausing enrollment preserves confirmation and delivery for existing devices.
 允许新设备登记|Allow new device registrations
@@ -412,8 +495,10 @@ ID 创建后不可修改，客户端与业务 Server 使用此 ID 接入。|The 
 创建应用|Create application
 密钥允许的环境|Allowed environments
 私钥文件（.p8）|Private key (.p8)
+当前 Firebase 项目|Current Firebase project
 当前 Firebase 项目：|Current Firebase project:
 尚未配置|Not configured
+服务账号|Service account
 服务账号：|Service account:
 Firebase 服务账号 JSON|Firebase service account JSON
 启用通道|Enable channel

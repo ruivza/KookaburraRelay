@@ -1,3 +1,6 @@
+import {AccessControl} from './access.js';
+import {Alerts} from './alerts.js';
+import {accessAPI} from './access-api.js';
 import {Backups} from './backups.js';
 import { loadEncryption } from './master-key.js';
 import { clientAddressResolver } from './client-address.js';
@@ -17,6 +20,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Applications, defaultApp, validID } from "./applications.js";
 import { channelCatalog } from "./channels.js";
+import { allows, notificationAlgorithm } from './notification.js';
 import { DeliveryQueue } from './delivery.js';
 import { Observability } from './observability.js';
 import { adminAPI } from './admin-api.js';
@@ -41,11 +45,12 @@ export async function createGateway({
   trustedProxies = process.env.GATEWAY_TRUSTED_PROXIES || '',
   onFatal = () => {},
   shutdownTimeout = 30000,
+  appleVerifier, googleVerifier, alertSender,
 } = {}) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const addressFor = clientAddressResolver(trustedProxies);
   const db = new Database(databaseUrl, databaseSchema);
-  let owner, applications, queue, monitor, maintenance, server, abuse;
+  let owner, applications, queue, monitor, maintenance, server, abuse, access, alerts;
   let ownershipLost = false, initialized = false, shutdown;
   const close = ({ fatal = false } = {}) => {
     if (queue) queue.stopping = true;
@@ -59,6 +64,8 @@ export async function createGateway({
     const cleanup = async () => {
       try {
         await maintenance?.close();
+        await alerts?.close();
+        await access?.close();
         await abuse?.close();
         await queue?.close();
         await closed;
@@ -123,9 +130,13 @@ export async function createGateway({
     applications = new Applications({ db, seal, open, providerFactory, fcmFactory, now });
     abuse = new AbuseProtection({ db, now });
     await abuse.initialize();
-    queue = new DeliveryQueue({ db, applications, open, now, abuse, autoStart: false });
+    access = new AccessControl({db,seal,open,now,abuse,appleVerifier,googleVerifier});
+    await access.initialize();
+    queue = new DeliveryQueue({ db, applications, open, seal, now, abuse, access, autoStart: false });
     monitor = new Observability({ db, now, queue, backups });
     await monitor.initialize(autoStart);
+    alerts = new Alerts({db,seal,open,abuse,monitor,now,sender:alertSender});
+    await alerts.initialize(autoStart);
     maintenance=new Maintenance({db,now,runId:monitor.runId});
     await maintenance.initialize(autoStart);
     await db.prepare("UPDATE delivery_jobs SET state='unknown',reason='Interrupted',updated=? WHERE state='sending' OR (mode='legacy' AND state='queued')").run(now());
@@ -165,9 +176,11 @@ export async function createGateway({
         value.app_id !== (body.appId ?? defaultApp) ||
         value.device_id !== body.deviceId ||
         value.server_id !== body.serverId ||
-        body.kind !== "sync"
+        !allows(value,body.kind)
       )
         fail(403, "Credential scope mismatch");
+      if (!(await applications.capabilities(value.app_id,value.channel)).includes(body.kind)) fail(403, 'Notification capability disabled for application');
+      await access.delivery(req,value);
       req.gatewayScope = { appId: value.app_id, channel: value.channel };
       return value;
     }
@@ -219,7 +232,7 @@ export async function createGateway({
           });
           return res.end(readFileSync(new URL("./index.html", import.meta.url)));
         }
-        if (req.method === "GET" && ["/admin.js", "/theme.js", "/i18n.js", "/security-ui.js", "/maintenance-ui.js", "/monitor-charts.js", "/backups-ui.js", "/abuse-ui.js", "/style.css"].includes(path)) {
+        if (req.method === "GET" && ["/admin.js", "/theme.js", "/i18n.js", "/security-ui.js", "/maintenance-ui.js", "/monitor-charts.js", "/backups-ui.js", "/abuse-ui.js", "/access-ui.js", "/style.css"].includes(path)) {
           res.writeHead(200, {
             "Content-Type": path.endsWith(".js") ? "text/javascript" : "text/css",
             "X-Content-Type-Options": "nosniff",
@@ -239,7 +252,7 @@ export async function createGateway({
           const chunks = [];
           for await (const chunk of req) {
             size += chunk.length;
-            if (size > 24000) fail(413, "Request too large");
+            if (size > 32768) fail(413, "Request too large");
             chunks.push(chunk);
           }
           try {
@@ -286,16 +299,22 @@ export async function createGateway({
           await monitor.record({ kind: 'audit', action: 'abuse.settings', requestId });
           return send(200, result);
         }
+        if (path.startsWith('/admin/') && await accessAPI({path,method:req.method,body,params:url.searchParams,access,abuse,alerts,monitor,send,requestId})) return;
+        if (path === '/v1/access' && req.method === 'GET') return send(200, await access.publicPolicy(url.searchParams.get('appId') || defaultApp));
+        if (path === '/v1/server-tickets' && req.method === 'POST') return send(200, await access.ticket(bearer(req),body));
+        if (path === '/v1/integrity/challenges' && req.method === 'POST') return send(200, await access.challenge(body,req.clientAddress));
         if (path === "/v1/status" && req.method === "GET") {
           const appId =
             new URL(req.url, "http://localhost").searchParams.get("appId") ||
             defaultApp;
           const app = (await applications.describe(appId));
+          const kinds = await applications.capabilities(appId,url.searchParams.get("channel") || "apns");
           return send(200, {
             protocol: 1,
             appId,
             ready: app.enabled && !!app[url.searchParams.get("channel") || "apns"]?.enabled,
-            kinds: ["sync"],
+            notificationEncryption: kinds.includes("encrypted_alert") ? notificationAlgorithm : null,
+            kinds,
           });
         }
         if (path === '/metrics' && req.method === 'GET') {
@@ -307,7 +326,7 @@ export async function createGateway({
         }
         if (path === '/monitor/report' && req.method === 'POST') return send(200, (await monitor.report(body)));
         if (path.startsWith('/admin/')) return await adminAPI({ path, method: req.method, body, params: url.searchParams, applications, db, queue, monitor, send, now, requestId });
-        return await deviceAPI({ req, path, body, send, applications, db, queue, now, limit, hash, secret, seal, open, bearer, device, abuse });
+        return await deviceAPI({ req, path, body, send, applications, db, queue, now, limit, hash, secret, seal, open, bearer, device, abuse, access });
       } catch (error) {
         if (error.retryAfter && !res.headersSent) res.setHeader('Retry-After', String(error.retryAfter));
         send(error.status || 500, {
@@ -328,7 +347,7 @@ export async function createGateway({
       db,
       adminPath,
       applications,
-      queue, monitor, monitorPath, security, maintenance, backups, abuse,
+      queue, monitor, monitorPath, security, maintenance, backups, abuse, access, alerts,
       close,
     };
   } catch (error) {

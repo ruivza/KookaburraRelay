@@ -69,11 +69,11 @@ export class APNsProvider {
         ":path": "/3/device/" + token,
         authorization: "bearer " + this.authorization(),
         "apns-topic": this.configuration.topic,
-        "apns-push-type": "background",
-        "apns-priority": "5",
+        "apns-push-type": payload.aps?.alert ? "alert" : "background",
+        "apns-priority": payload.aps?.alert ? "10" : "5",
         "apns-collapse-id": payload.perchRegistration
           ? "perch-enroll-" + payload.perchRegistration.id
-          : "perch-mail-sync",
+          : payload.aps?.alert ? "relay-" + (payload.relay?.kind || "alert") : "perch-mail-sync",
         "apns-expiration": String(
           Math.floor(this.now() / 1000) +
             (payload.perchRegistration ? 300 : 3600),
