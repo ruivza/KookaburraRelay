@@ -497,3 +497,40 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .theme-menu button:hover, .theme-menu button:focus-visible { background: var(--hover); outline: none; }
 .theme-check { margin-left: auto; visibility: hidden; }
 [aria-checked=true] .theme-check { visibility: visible; }
+
+/* Monitoring plots keep a stable height and HTML-sized labels at every width. */
+.stacked-chart { margin: 0 0 22px; }
+.stacked-legend { display:flex; flex-wrap:wrap; align-items:center; gap:12px 24px; margin-bottom:22px; color:var(--secondary-text); font-size:12px; line-height:1.5; }
+.stacked-legend > span { display:inline-flex; align-items:center; gap:8px; }
+.stacked-legend i { width:9px; height:9px; border-radius:3px; flex:none; background:var(--chart-green); }
+.stacked-legend i.series-failed { background:var(--chart-red); }
+.stacked-legend i.series-unknown, .stacked-legend i.series-retrying { background:var(--chart-amber); }
+.stacked-legend i.series-queued { background:var(--chart-blue); }
+.stacked-plot { display:grid; grid-template-columns:32px minmax(0,1fr); gap:12px; }
+.stacked-plot svg { display:block; width:100%; height:180px; overflow:visible; }
+.stacked-chart g:focus-visible { outline:2px solid var(--accent); }
+.stacked-yaxis { display:flex; flex-direction:column; justify-content:space-between; text-align:right; padding:0 0 2px; color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
+.stacked-range { display:flex; justify-content:space-between; gap:12px; margin:12px 0 0 44px; color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
+.stacked-empty { min-height:116px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:14px; border:1px dashed var(--subtle-line); border-radius:8px; text-align:center; }
+.stacked-empty strong { font-size:13px; font-weight:500; color:var(--secondary-text); }
+.stacked-empty > span { color:var(--muted); font-size:12px; }
+.stacked-empty .stacked-empty-mark { font-size:24px; line-height:1; color:var(--chart-blue); }
+#content > details.panel > summary { padding:20px; cursor:pointer; }
+@media(max-width:600px) {
+ .stacked-plot svg { height:150px; }
+ .stacked-legend { gap:10px 18px; margin-bottom:16px; }
+ .stacked-range { font-size:10px; }
+}
+
+.line-chart-heading { display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:22px; font-size:12px; color:var(--secondary-text); }
+.line-chart-heading > :last-child { color:var(--muted); }
+.line-chart-plot { display:grid; grid-template-columns:32px minmax(0,1fr); gap:12px; }
+.line-chart-axis { display:flex; flex-direction:column; justify-content:space-between; font-size:11px; color:var(--muted); text-align:right; font-variant-numeric:tabular-nums; }
+.line-chart-plot .history-chart { height:180px; min-height:0; overflow:visible; }
+.diagnostics-panel .time-chart { margin:28px 0; }
+#content > .diagnostics-panel > summary { display:flex; align-items:center; justify-content:space-between; padding:22px 24px; font-size:14px; font-weight:600; list-style:none; }
+.diagnostics-panel > summary::-webkit-details-marker { display:none; }
+.diagnostics-panel[open] > summary { border-bottom:1px solid var(--line); }
+.disclosure-chevron { width:8px; height:8px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(45deg); margin:0 3px 4px 12px; color:var(--muted); }
+.diagnostics-panel[open] .disclosure-chevron { transform:rotate(225deg); margin-top:6px; }
+@media(max-width:600px) { .line-chart-plot .history-chart { height:150px; } .panel-head { flex-wrap:wrap; } }

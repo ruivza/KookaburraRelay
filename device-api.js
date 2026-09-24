@@ -2,15 +2,15 @@ import { defaultApp, validID } from './applications.js';
 import { channelCatalog } from './channels.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 const fail = (status, message) => { throw Object.assign(Error(message), { status }); };
-export async function deviceAPI({ req, path, body, send, applications, db, queue, now, limit, hash, secret, seal, open, bearer, device }) {
+export async function deviceAPI({ req, path, body, send, applications, db, queue, now, limit, hash, secret, seal, open, bearer, device, abuse }) {
       if (path === "/v1/registrations" && req.method === "POST") {
         const appId = body.appId ?? defaultApp;
         const channel = body.channel ?? "apns";
         if (!channelCatalog.some(c => c.id === channel && c.platform === (body.platform ?? "ios") && c.implemented))
           fail(501, "Push channel not implemented");
-        const route = (await applications.resolve(appId, channel, body.environment));
         req.gatewayScope = { appId, channel };
         if (
+          !validID(appId) ||
           !validID(body.deviceId) ||
           !validID(body.serverId) ||
           !validID(body.nonce) ||
@@ -20,6 +20,9 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
           !["sandbox", "production"].includes(body.environment)
         )
           fail(400, "Invalid registration");
+        const release = abuse.reserveChallenge();
+        let id;
+        try {
         (await limit("enroll-ip:" + appId + ":" + req.clientAddress, 60));
         const normalizedToken = channel === "apns" ? body.deviceToken.toLowerCase() : body.deviceToken;
         const tokenHash = hash(
@@ -32,11 +35,16 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
             normalizedToken,
         );
         (await limit("enroll-token:" + tokenHash, 6));
-        const id = randomUUID(),
-          challenge = secret();
+        const route = await applications.resolve(appId, channel, body.environment);
+        id = randomUUID();
+        const challenge = secret();
+        const expiresAt = now() + 300000;
+        await db.transaction(async () => {
+        await db.query('SELECT pg_advisory_xact_lock(72841104)');
         (await db.prepare(
           "DELETE FROM registrations WHERE token_hash=? AND delivery_hash IS NULL",
         ).run(tokenHash));
+        await abuse.registration(appId);
         (await db.prepare(
           `INSERT INTO registrations(id,device_id,server_id,token,token_hash,environment,nonce,challenge_hash,expires,app_id,channel,app_revision)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -49,11 +57,12 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
           body.environment,
           body.nonce,
           hash(challenge),
-          now() + 300000,
+          expiresAt,
           appId,
           channel,
           route.revision,
         ));
+        });
         const result = await route.adapter.send(
           {
             device_id: body.deviceId,
@@ -83,7 +92,11 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
           (await db.prepare("DELETE FROM registrations WHERE id=?").run(id));
           fail(502, "Device challenge could not be delivered");
         }
-        return send(202, { registrationId: id, expiresAt: now() + 300000 });
+        return send(202, { registrationId: id, expiresAt });
+        } catch (error) {
+          if (id) await db.prepare('DELETE FROM registrations WHERE id=? AND delivery_hash IS NULL').run(id);
+          throw error;
+        } finally { release(); }
       }
       const confirm = path.match(
         /^\/v1\/registrations\/([A-Za-z0-9_-]+)\/confirm$/,
@@ -138,11 +151,15 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
       }
       const revoke = path.match(/^\/v1\/registrations\/([A-Za-z0-9_-]+)$/);
       if (revoke && req.method === "DELETE") {
+        if (!/^[A-Za-z0-9_-]{43}$/.test(bearer(req))) return send(200, { revoked: true });
+        await db.transaction(async () => {
+        await db.query('SELECT pg_advisory_xact_lock(72841103)');
         const owned = (await db.prepare('SELECT id FROM registrations WHERE id=? AND revoke_hash=?').get(revoke[1], hash(bearer(req))));
         if (owned) (await queue.cancelRegistration(owned.id));
         (await db.prepare(
           "DELETE FROM registrations WHERE id=? AND revoke_hash=?",
         ).run(revoke[1], hash(bearer(req))));
+        });
         return send(200, { revoked: true });
       }
       if (
@@ -158,11 +175,15 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
         const job = await queue.legacy(entry);
         if (job.state === 'cancelled') return send(410, { reason: 'registration_invalid', taskId: job.id });
         if (job.state === 'accepted') return send(200, { accepted: true, taskId: job.id });
+        if (job.reason === 'GatewayQuota') throw Object.assign(Error('Gateway resource limit'), {
+          status: 429, reason: 'delivery_attempt_quota', retryAfter: Math.max(1, Math.ceil((job.next_at - now()) / 1000)),
+        });
         if (!(await db.prepare('SELECT 1 FROM registrations WHERE id=?').get(entry.id))) return send(410, { reason: 'registration_invalid', taskId: job.id });
         return send(job.status === 429 ? 429 : 503, { reason: 'delivery_failed', taskId: job.id });
       }
       const task = path.match(/^\/v1\/jobs\/([A-Za-z0-9_-]+)$/);
       if (task && req.method === 'GET') {
+        if (!/^[A-Za-z0-9_-]{43}$/.test(bearer(req))) fail(410, 'Registration expired or revoked');
         const entry = (await db.prepare('SELECT * FROM registrations WHERE delivery_hash=? AND expires>?').get(hash(bearer(req)), now()));
         if (!entry || !(await applications.current(entry))) fail(410, 'Registration expired or revoked');
         const job = (await queue.get(task[1]));

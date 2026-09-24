@@ -5,14 +5,23 @@ const invalidToken = result => result.status === 410 || ['BadDeviceToken','Devic
 // Only provider error codes from this allowlist may enter logs, never provider text.
 const safeReasons = new Set(['BadDeviceToken','DeviceTokenNotForTopic','Unregistered','UNREGISTERED','SENDER_ID_MISMATCH','INVALID_ARGUMENT','QUOTA_EXCEEDED','UNAVAILABLE','INTERNAL','THIRD_PARTY_AUTH_ERROR','InvalidProviderToken','ExpiredProviderToken','TooManyRequests','ServiceUnavailable','Shutdown','BadTopic','TopicDisallowed','AuthenticationError','NetworkError']);
 export class DeliveryQueue {
-  constructor({ db, applications, open, now = Date.now, autoStart = true, concurrency = 4 }) {
-    Object.assign(this, { db, applications, open, now, concurrency });
+  constructor({ db, applications, open, now = Date.now, autoStart = true, concurrency = 4, abuse }) {
+    Object.assign(this, { db, applications, open, now, concurrency, abuse });
     this.active = new Map();
+    this.failures = 0; this.lastSuccessAt = null; this.lastErrorAt = null;
     this.slots = new Set();
     if (autoStart) this.start();
   }
   start() {
-    if (!this.timer && !this.stopping) this.timer = setInterval(() => { void this.flush().catch(() => {}); }, 1000).unref();
+    if (!this.timer && !this.stopping) this.timer = setInterval(() => { void this.poll(); }, 1000).unref();
+  }
+  async poll() {
+    if(this.polling)return this.polling;
+    this.polling=(async()=>{
+      try { await this.flush(); this.lastSuccessAt=this.now(); this.lastErrorAt=null; }
+      catch { this.failures++; this.lastErrorAt=this.now(); console.error('Delivery worker cycle failed'); }
+    })();
+    try { await this.polling; } finally { this.polling=null; }
   }
   async get(id) { return (await this.db.prepare('SELECT * FROM delivery_jobs WHERE id=?').get(id)); }
   public(job) { if (!job) fail(404, 'Task not found'); const { dedupe, ...safe } = job; return safe; }
@@ -33,6 +42,7 @@ export class DeliveryQueue {
     const pending = (await this.db.prepare("SELECT 1 FROM delivery_jobs WHERE registration_id=? AND state IN ('queued','retrying','sending')").get(entry.id));
     if (pending || (entry.last_sent && this.now() - entry.last_sent < 60000)) fail(429, 'Device rate limit');
     const id = randomUUID(), time = this.now();
+      await this.abuse?.task(entry);
 
       (await this.db.prepare('INSERT INTO delivery_jobs(id,registration_id,app_id,channel,device_id,mode,dedupe,state,created,updated,next_at,expires) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
         .run(id, entry.id, entry.app_id, entry.channel, entry.device_id, mode, dedupe, 'queued', time, time, time, Math.min(entry.expires, time + 86400000)));
@@ -76,12 +86,23 @@ export class DeliveryQueue {
       (await this.db.prepare("UPDATE delivery_jobs SET state='cancelled',reason='RegistrationExpired',updated=? WHERE id=?").run(this.now(), id));
       return (await this.get(id));
     }
+    try { await this.abuse?.attempt(entry); }
+    catch (error) {
+      if (error.status !== 429) throw error;
+      const next = this.now() + error.retryAfter * 1000;
+      const retry = job.mode === 'async' && next < job.expires;
+      await this.db.prepare("UPDATE delivery_jobs SET state=?,status=429,reason='GatewayQuota',next_at=?,updated=? WHERE id=? AND state IN ('queued','retrying')")
+        .run(retry ? 'retrying' : 'failed', next, this.now(), id);
+      return this.get(id);
+    }
     const claimed = await this.db.prepare("UPDATE delivery_jobs SET state='sending',attempts=attempts+1,updated=? WHERE id=? AND state IN ('queued','retrying') RETURNING id").get(this.now(), id);
     if (!claimed) return this.get(id);
     const start = performance.now();
     let result;
     try {
       const route = (await this.applications.resolve(entry.app_id, entry.channel, entry.environment));
+      // Configuration lookup yields; recheck cancellation immediately before send.
+      if ((await this.get(id)).state !== 'sending' || !await this.applications.current(entry)) return this.get(id);
       result = await route.adapter.send(entry, this.open(entry.token), { kind: 'sync' });
     } catch { result = { status: 0, reason: 'NetworkError' }; }
     if ((await this.get(id)).state !== 'sending') return (await this.get(id));

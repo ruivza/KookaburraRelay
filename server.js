@@ -21,6 +21,7 @@ import { DeliveryQueue } from './delivery.js';
 import { Observability } from './observability.js';
 import { adminAPI } from './admin-api.js';
 import { deviceAPI } from './device-api.js';
+import { AbuseProtection } from './abuse.js';
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const secret = () => randomBytes(32).toString("base64url");
 const fail = (status, message) => {
@@ -44,7 +45,7 @@ export async function createGateway({
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const addressFor = clientAddressResolver(trustedProxies);
   const db = new Database(databaseUrl, databaseSchema);
-  let owner, applications, queue, monitor, maintenance, server;
+  let owner, applications, queue, monitor, maintenance, server, abuse;
   let ownershipLost = false, initialized = false, shutdown;
   const close = ({ fatal = false } = {}) => {
     if (queue) queue.stopping = true;
@@ -58,6 +59,7 @@ export async function createGateway({
     const cleanup = async () => {
       try {
         await maintenance?.close();
+        await abuse?.close();
         await queue?.close();
         await closed;
       } finally {
@@ -119,8 +121,10 @@ export async function createGateway({
     const backups=new Backups({db,seal,open,security,now});
     await backups.initialize();
     applications = new Applications({ db, seal, open, providerFactory, fcmFactory, now });
-    queue = new DeliveryQueue({ db, applications, open, now, autoStart: false });
-    monitor = new Observability({ db, now, autoStart });
+    abuse = new AbuseProtection({ db, now });
+    await abuse.initialize();
+    queue = new DeliveryQueue({ db, applications, open, now, abuse, autoStart: false });
+    monitor = new Observability({ db, now, queue, backups });
     await monitor.initialize(autoStart);
     maintenance=new Maintenance({db,now,runId:monitor.runId});
     await maintenance.initialize(autoStart);
@@ -129,11 +133,18 @@ export async function createGateway({
     if (!existsSync(monitorPath)) writeFileSync(monitorPath, secret(), { mode: 0o600, flag: 'wx' });
     const monitorToken = readFileSync(monitorPath, 'utf8').trim();
     async function limit(key, maximum, window = 3600000) {
-      const time = now();
-      const entry = await db.prepare(`INSERT INTO limits VALUES(?,?,1) ON CONFLICT(key) DO UPDATE SET
-        count=CASE WHEN limits.start<=? THEN 1 ELSE limits.count+1 END,
-        start=CASE WHEN limits.start<=? THEN excluded.start ELSE limits.start END RETURNING count`).get(key,time,time-window,time-window);
-      if(entry.count>maximum) fail(429,'Too many requests');
+      await db.transaction(async () => {
+        await db.query('SELECT pg_advisory_xact_lock(72841105)');
+        const time = now();
+        const previous = await db.prepare('SELECT * FROM limits WHERE key=?').get(key);
+        if (previous && previous.start > time-window && previous.count >= maximum)
+          abuse.reject('source_or_device', (previous.start + window - time) / 1000);
+        if (!previous && (await db.prepare('SELECT count(*) n FROM limits').get()).n >= 20000)
+          abuse.reject('limit_capacity', 60, 503);
+        await db.prepare(`INSERT INTO limits VALUES(?,?,1) ON CONFLICT(key) DO UPDATE SET
+          count=CASE WHEN limits.start<=? THEN 1 ELSE limits.count+1 END,
+          start=CASE WHEN limits.start<=? THEN excluded.start ELSE limits.start END`).run(key,time,time-window,time-window);
+      });
     }
 
     function bearer(req) {
@@ -142,6 +153,7 @@ export async function createGateway({
         : "";
     }
     async function device(req, body) {
+      if (!/^[A-Za-z0-9_-]{43}$/.test(bearer(req))) fail(410, 'Registration expired or revoked');
       const value = (await db
         .prepare(
           "SELECT * FROM registrations WHERE delivery_hash=? AND expires>?",
@@ -161,20 +173,24 @@ export async function createGateway({
     }
     server = http.createServer(async (req, res) => {
       const requestId = randomUUID(), start = performance.now();
-      let path = '', body = {};
+      let path = '', body = {}, release;
       res.setHeader('X-Request-ID', requestId);
       res.once('finish', () => { void (async () => {
         const duration = performance.now() - start;
         monitor.request(res.statusCode, duration);
         if (path.startsWith('/v1/') && req.method !== 'GET' || res.statusCode >= 400 && res.statusCode !== 429) {
+          await abuse.log(async () => {
           const route = path.replace(/\/registrations\/[^/]+/, '/registrations/:id').replace(/\/apps\/[^/]+/, '/apps/:id').replace(/\/jobs\/[^/]+/, '/jobs/:id').replace(/\/devices\/[^/]+/, '/devices/:id');
           const known = /^\/(v1|admin)\/(registrations|notify|validate|status|apps|overview|monitor|logs|jobs|devices|metrics)(\/(:id|confirm|channels|apns|fcm|test))*$/.test(route);
           const logApp = req.gatewayScope?.appId ?? body?.appId ?? (path.startsWith('/v1/') ? defaultApp : '');
           (await monitor.record({ kind: res.statusCode >= 400 ? 'error' : 'request', action: req.method + ' ' + (known ? route : '/unknown'),
             appId: validID(logApp) && (await db.prepare('SELECT 1 FROM applications WHERE id=?').get(logApp)) ? logApp : '', channel: req.gatewayScope?.channel || (['apns','fcm'].includes(body?.channel) ? body.channel : ''), status: res.statusCode, duration, requestId }));
+          });
         }
       })().catch(() => console.error('Gateway request audit could not be stored')); });
       const send = (status, value) => {
+        if (res.destroyed || res.headersSent) return;
+        if ((status === 429 || status === 503) && !res.hasHeader('Retry-After')) res.setHeader('Retry-After', '60');
         res.writeHead(status, {
           "Content-Type": "application/json",
           "Cache-Control": "no-store",
@@ -185,6 +201,7 @@ export async function createGateway({
       try {
         if (shutdown || ownershipLost) return send(503, { error: "Gateway shutting down" });
         req.clientAddress = addressFor(req);
+        release = abuse.admit(req.clientAddress);
         const url = new URL(req.url, "http://localhost");
         path = url.pathname;
         if (req.method === 'GET' && ['/logo.png','/favicon.png'].includes(path)) {
@@ -202,7 +219,7 @@ export async function createGateway({
           });
           return res.end(readFileSync(new URL("./index.html", import.meta.url)));
         }
-        if (req.method === "GET" && ["/admin.js", "/theme.js", "/i18n.js", "/security-ui.js", "/maintenance-ui.js", "/monitor-charts.js", "/backups-ui.js", "/style.css"].includes(path)) {
+        if (req.method === "GET" && ["/admin.js", "/theme.js", "/i18n.js", "/security-ui.js", "/maintenance-ui.js", "/monitor-charts.js", "/backups-ui.js", "/abuse-ui.js", "/style.css"].includes(path)) {
           res.writeHead(200, {
             "Content-Type": path.endsWith(".js") ? "text/javascript" : "text/css",
             "X-Content-Type-Options": "nosniff",
@@ -263,7 +280,12 @@ export async function createGateway({
         if(path==='/admin/cleanup/preview' && req.method==='POST') return send(200,await maintenance.preview(body));
         if(path==='/admin/cleanup/run' && req.method==='POST'){const result=await maintenance.manual(body.previewId);await monitor.record({kind:'audit',action:'cleanup.manual',requestId});return send(202,result);}
         if(path==='/admin/logout'&&req.method==='POST'){await security.logout(bearer(req));return send(200,{signedOut:true});}
-        (await db.prepare("DELETE FROM registrations WHERE expires<=?").run(now()));
+        if (path === '/admin/abuse' && req.method === 'GET') return send(200, abuse.state());
+        if (path === '/admin/abuse' && req.method === 'PUT') {
+          const result = await abuse.save(body);
+          await monitor.record({ kind: 'audit', action: 'abuse.settings', requestId });
+          return send(200, result);
+        }
         if (path === "/v1/status" && req.method === "GET") {
           const appId =
             new URL(req.url, "http://localhost").searchParams.get("appId") ||
@@ -278,16 +300,22 @@ export async function createGateway({
         }
         if (path === '/metrics' && req.method === 'GET') {
           const v = (await monitor.overview());
+          const q=await monitor.queueStatus(), b=await backups.summary();
+          const operational=`# TYPE perch_gateway_queue_oldest_wait_seconds gauge\nperch_gateway_queue_oldest_wait_seconds ${q.oldestWaitSeconds}\n# TYPE perch_gateway_queue_overdue gauge\nperch_gateway_queue_overdue ${q.overdue}\n# TYPE perch_gateway_sending_stuck gauge\nperch_gateway_sending_stuck ${q.stuck}\n# TYPE perch_gateway_worker_error gauge\nperch_gateway_worker_error ${+q.workerError}\n# TYPE perch_gateway_monitor_last_sample_seconds gauge\nperch_gateway_monitor_last_sample_seconds ${(monitor.lastSampleAt??0)/1000}\n# TYPE perch_gateway_backup_worker_online gauge\nperch_gateway_backup_worker_online ${+b.workerOnline}\n# TYPE perch_gateway_backup_last_success_seconds gauge\nperch_gateway_backup_last_success_seconds{target="local"} ${(b.local.lastSuccess??0)/1000}\nperch_gateway_backup_last_success_seconds{target="remote"} ${(b.remote.lastSuccess??0)/1000}\n# TYPE perch_gateway_backup_attention gauge\nperch_gateway_backup_attention{target="local"} ${+!['ok','disabled'].includes(b.local.status)}\nperch_gateway_backup_attention{target="remote"} ${+!['ok','disabled'].includes(b.remote.status)}\n`;
           res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4', 'Cache-Control': 'no-store' });
-          return res.end(`# HELP perch_gateway_uptime_seconds Current process uptime\n# TYPE perch_gateway_uptime_seconds gauge\nperch_gateway_uptime_seconds ${v.uptime / 1000}\n# TYPE perch_gateway_queue_depth gauge\nperch_gateway_queue_depth ${v.queue}\n# TYPE perch_gateway_memory_bytes gauge\nperch_gateway_memory_bytes ${v.memory.rss}\n# TYPE perch_gateway_tasks_24h gauge\nperch_gateway_tasks_24h{state="accepted"} ${v.counts.accepted}\nperch_gateway_tasks_24h{state="failed_or_unknown"} ${v.counts.failed}\n`);
+          return res.end(operational+`# HELP perch_gateway_uptime_seconds Current process uptime\n# TYPE perch_gateway_uptime_seconds gauge\nperch_gateway_uptime_seconds ${v.uptime / 1000}\n# TYPE perch_gateway_queue_depth gauge\nperch_gateway_queue_depth ${v.queue}\n# TYPE perch_gateway_memory_bytes gauge\nperch_gateway_memory_bytes ${v.memory.rss}\n# TYPE perch_gateway_tasks_24h gauge\nperch_gateway_tasks_24h{state="accepted"} ${v.counts.accepted}\nperch_gateway_tasks_24h{state="failed_or_unknown"} ${v.counts.failed}\n`);
         }
         if (path === '/monitor/report' && req.method === 'POST') return send(200, (await monitor.report(body)));
         if (path.startsWith('/admin/')) return await adminAPI({ path, method: req.method, body, params: url.searchParams, applications, db, queue, monitor, send, now, requestId });
-        return await deviceAPI({ req, path, body, send, applications, db, queue, now, limit, hash, secret, seal, open, bearer, device });
+        return await deviceAPI({ req, path, body, send, applications, db, queue, now, limit, hash, secret, seal, open, bearer, device, abuse });
       } catch (error) {
+        if (error.retryAfter && !res.headersSent) res.setHeader('Retry-After', String(error.retryAfter));
         send(error.status || 500, {
           error: error.status ? error.message : "Gateway request failed",
+          ...(error.reason ? { reason: error.reason } : {}),
         });
+      } finally {
+        release?.();
       }
     });
     server.requestTimeout = 15000;
@@ -300,7 +328,7 @@ export async function createGateway({
       db,
       adminPath,
       applications,
-      queue, monitor, monitorPath, security, maintenance, backups,
+      queue, monitor, monitorPath, security, maintenance, backups, abuse,
       close,
     };
   } catch (error) {

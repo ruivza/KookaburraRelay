@@ -170,7 +170,8 @@ test("applications isolate routing, ownership, credentials, changes and persiste
       (
         await call(
           "/v1/registrations",
-          { appId: "notes", platform: "android", channel: "fcm" },
+          { appId: "notes", platform: "android", channel: "fcm", deviceId: "phone", serverId: "server",
+            deviceToken: "Valid_FCM_Test_Token_12345", environment: "production", nonce: "n".repeat(40) },
           "",
         )
       ).status,

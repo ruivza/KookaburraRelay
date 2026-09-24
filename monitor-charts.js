@@ -29,7 +29,8 @@ export function renderChart(samples,key,label,color='var(--chart-green)'){
  const m=chartModel(samples,key),unit=key==='rss'?'MB':key==='latency'?'ms':t('条');
  const data={...m,key,label,unit};delete data.segments;delete data.ticks;
  const axis=n=>Number(n.toPrecision(4)).toLocaleString(undefined,{maximumFractionDigits:3});
- return `<div class="time-chart" data-time-chart="${esc(JSON.stringify(data))}"><svg class="history-chart" viewBox="0 0 ${WIDTH} ${HEIGHT}" role="img" tabindex="0" aria-label="${esc(label+' · '+t('使用左右方向键查看采样值'))}"><title>${esc(label)}</title><text x="${LEFT}" y="14" class="chart-axis">${esc(unit)}</text>${m.ticks.map(tick=>`<line x1="${LEFT}" y1="${tick.y}" x2="${RIGHT}" y2="${tick.y}" class="chart-grid"/><text x="${LEFT-9}" y="${tick.y+4}" text-anchor="end" class="chart-axis">${axis(tick.value)}</text>`).join('')}<line x1="${LEFT}" y1="${TOP}" x2="${LEFT}" y2="${BOTTOM}" class="chart-grid"/>${m.segments.map(s=>s.length===1?`<circle cx="${s[0].x}" cy="${s[0].y}" r="3" fill="${color}"/>`:`<polyline fill="none" stroke="${color}" stroke-width="2.5" points="${s.map(p=>`${p.x},${p.y}`).join(' ')}"/>`).join('')}<g data-chart-cursor visibility="hidden"><line y1="${TOP}" y2="${BOTTOM}" stroke="var(--chart-cursor)" stroke-dasharray="4 4"/><circle r="4" fill="${color}" stroke="var(--surface)" stroke-width="2"/></g><rect x="${LEFT}" y="${TOP}" width="${RIGHT-LEFT}" height="${BOTTOM-TOP}" fill="transparent"/></svg><div class="chart-tooltip" role="status" hidden></div><div class="chart-labels"><span>${esc(stamp(m.minTime))}</span><span>${t('峰值')} ${axis(m.max)} ${esc(unit)}</span><span>${esc(stamp(m.maxTime))}</span></div></div>`;
+ const shortTime=time=>new Date(time).toLocaleString(undefined,{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+ return `<div class="time-chart" data-time-chart="${esc(JSON.stringify(data))}"><div class="line-chart-heading"><span>${esc(label)}</span><span>${t('峰值')} ${axis(m.max)} ${esc(unit)}</span></div><div class="line-chart-plot"><div class="line-chart-axis chart-axis" aria-hidden="true">${[...m.ticks].reverse().map(tick=>`<span>${axis(tick.value)}</span>`).join('')}</div><svg class="history-chart" viewBox="${LEFT} ${TOP} ${RIGHT-LEFT} ${BOTTOM-TOP}" preserveAspectRatio="none" role="img" tabindex="0" aria-label="${esc(label+' · '+t('使用左右方向键查看采样值'))}"><title>${esc(label)}</title>${m.ticks.map(tick=>`<line x1="${LEFT}" y1="${tick.y}" x2="${RIGHT}" y2="${tick.y}" class="chart-grid" vector-effect="non-scaling-stroke"/>`).join('')}${m.segments.map(s=>s.length===1?`<circle cx="${s[0].x}" cy="${s[0].y}" r="3" fill="${color}"/>`:`<polyline fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke" points="${s.map(p=>`${p.x},${p.y}`).join(' ')}"/>`).join('')}<g data-chart-cursor visibility="hidden"><line y1="${TOP}" y2="${BOTTOM}" stroke="var(--chart-cursor)" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/><circle r="4" fill="${color}" stroke="var(--surface)" stroke-width="2"/></g><rect x="${LEFT}" y="${TOP}" width="${RIGHT-LEFT}" height="${BOTTOM-TOP}" fill="transparent"/></svg></div><div class="chart-tooltip" role="status" hidden></div><div class="stacked-range"><time title="${esc(stamp(m.minTime))}">${esc(shortTime(m.minTime))}</time><time title="${esc(stamp(m.maxTime))}">${esc(shortTime(m.maxTime))}</time></div></div>`;
 }
 function show(chart,index,time){
  const data=JSON.parse(chart.dataset.timeChart),svg=chart.querySelector('svg'),tooltip=chart.querySelector('.chart-tooltip'),cursor=chart.querySelector('[data-chart-cursor]'),point=index===null?null:data.points[index];
@@ -40,7 +41,7 @@ function show(chart,index,time){
  const x=LEFT+((point?.time??time)-data.minTime)/data.span*(RIGHT-LEFT);
  if(valid){const line=cursor.querySelector('line'),circle=cursor.querySelector('circle');line.setAttribute('x1',x);line.setAttribute('x2',x);circle.setAttribute('cx',x);circle.setAttribute('cy',BOTTOM-value/data.ceiling*(BOTTOM-TOP));}
  const box=chart.getBoundingClientRect(),svgBox=svg.getBoundingClientRect();
- tooltip.style.left=Math.max(0,Math.min(box.width-tooltip.offsetWidth,x/WIDTH*svgBox.width-tooltip.offsetWidth/2))+'px';tooltip.style.top='0px';
+ tooltip.style.left=Math.max(0,Math.min(box.width-tooltip.offsetWidth,svgBox.left-box.left+(x-LEFT)/(RIGHT-LEFT)*svgBox.width-tooltip.offsetWidth/2))+'px';tooltip.style.top='0px';
 }
 function hide(chart){chart.querySelector('.chart-tooltip').hidden=true;chart.querySelector('[data-chart-cursor]').setAttribute('visibility','hidden');}
 if(typeof document!=='undefined'){
@@ -50,4 +51,23 @@ if(typeof document!=='undefined'){
  document.addEventListener('focusin',e=>{if(e.target.matches?.('.history-chart')){const chart=e.target.closest('[data-time-chart]'),data=JSON.parse(chart.dataset.timeChart);if(chart.querySelector('.chart-tooltip').hidden)show(chart,data.points.length-1,data.maxTime);}});
  document.addEventListener('focusout',e=>{if(e.target.matches?.('.history-chart'))hide(e.target.closest('[data-time-chart]'));});
  document.addEventListener('keydown',e=>{if(!e.target.matches?.('.history-chart'))return;const chart=e.target.closest('[data-time-chart]');if(e.key==='Escape'){hide(chart);return;}if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const data=JSON.parse(chart.dataset.timeChart),last=data.points.length-1,current=chart.dataset.activePoint===''?last:Number(chart.dataset.activePoint??last);const index=e.key==='Home'?0:e.key==='End'?last:Math.max(0,Math.min(last,current+(e.key==='ArrowLeft'?-1:1)));show(chart,index,data.points[index].time);});
+}
+
+// Keep labels outside the SVG so text does not grow with the plot width.
+// Buckets retain their actual timestamps; missing queue samples remain gaps.
+export function renderStackedChart(samples,series,label,interval=3600000){
+ const {t,esc,stamp}=ctx;
+ const legend=`<div class="stacked-legend">${series.map(k=>`<span><i class="series-${k.key}" aria-hidden="true"></i>${esc(t(k.label))}</span>`).join('')}</div>`;
+ if(!samples.length)return `<div class="stacked-chart">${legend}<div class="stacked-empty"><strong>${t('暂无采样数据')}</strong><span>${t('开始采样后显示队列趋势。')}</span></div></div>`;
+ const totals=samples.map(s=>series.reduce((n,k)=>n+Number(s[k.key]||0),0));
+ const peak=Math.max(...totals),max=Math.max(1,peak),span=Math.max(interval,samples.at(-1).time-samples[0].time+interval),width=560*interval/span;
+ const x=s=>560*(s.time-samples[0].time)/span;
+ const shortTime=time=>new Date(time).toLocaleString(undefined,{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+ const range=`<div class="stacked-range"><time title="${esc(stamp(samples[0].time))}">${esc(shortTime(samples[0].time))}</time><time title="${esc(stamp(samples.at(-1).time))}">${esc(shortTime(samples.at(-1).time))}</time></div>`;
+ if(!peak){
+  const message=interval===60000?'已采样时刻没有待处理任务':'最近 24 小时暂无推送结果';
+  const note=interval===60000?'缺失采样时段不计入正常状态。':'产生推送结果后，这里会显示趋势。';
+  return `<div class="stacked-chart">${legend}<div class="stacked-empty"><span class="stacked-empty-mark" aria-hidden="true">—</span><strong>${t(message)}</strong><span>${t(note)}</span></div>${range}</div>`;
+ }
+ return `<div class="stacked-chart">${legend}<div class="stacked-plot"><div class="stacked-yaxis" aria-hidden="true"><span>${max}</span><span>0</span></div><svg viewBox="0 0 560 160" preserveAspectRatio="none" role="img" aria-label="${esc(t(label))}"><title>${esc(t(label))}</title>${[5,80,155].map(y=>`<line x1="0" y1="${y}" x2="560" y2="${y}" class="chart-grid" vector-effect="non-scaling-stroke"/>`).join('')}${samples.map(s=>{let y=155;const title=stamp(s.time)+' · '+series.map(k=>t(k.label)+': '+Number(s[k.key]||0)).join(' / ');return `<g tabindex="0" role="img" aria-label="${esc(title)}"><title>${esc(title)}</title><rect x="${x(s)}" y="0" width="${width}" height="160" fill="transparent"/>${series.map(k=>{const h=Number(s[k.key]||0)/max*150;y-=h;return `<rect x="${x(s)}" y="${y}" width="${Math.max(.1,width*.78)}" height="${h}" fill="${k.color}"/>`;}).join('')}</g>`;}).join('')}</svg></div>${range}</div>`;
 }

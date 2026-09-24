@@ -1,16 +1,23 @@
-import {initializeCharts,renderChart} from './monitor-charts.js';
+import {initializeAbuse,renderAbuse} from './abuse-ui.js';
+import {initializeCharts,renderChart,renderStackedChart} from './monitor-charts.js';
 import {initializeBackups,renderBackups} from './backups-ui.js';
 import {initializeMaintenance,renderMaintenance} from './maintenance-ui.js';
 import {initializeSecurity,renderSecurity,clearSecurity} from './security-ui.js';
 import { t, html, language, locale, setLanguage, translateError } from './i18n.js';
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
-const getTitles = () => ({ overview:t('总览'), apps:t('应用管理'), apns:t('APNs 通道'), android:t('Android 通道'), deliveries:t('推送记录'), devices:t('设备登记'), monitor:t('运行监控'), logs:t('日志与审计'), backups:t('备份与恢复'), settings:t('存储与清理'), security:t('安全设置') });
+const getTitles = () => ({ abuse:t('资源保护'), overview:t('总览'), apps:t('应用管理'), apns:t('APNs 通道'), android:t('Android 通道'), deliveries:t('推送记录'), devices:t('设备登记'), monitor:t('运行监控'), logs:t('日志与审计'), backups:t('备份与恢复'), settings:t('存储与清理'), security:t('安全设置') });
 let titles = getTitles();
 const getStates = () => ({ queued:[t('已入队'),'blue'], retrying:[t('等待重试'),'amber'], sending:[t('发送中'),'blue'], accepted:[t('通道已接受'),'green'], failed:[t('发送失败'),'red'], unknown:[t('结果未知'),'amber'], cancelled:[t('已取消'),''] });
 let states = getStates();
 let token = '', epoch = 0, navigation = 0, apps = [], catalog = [], busy = false, current = 'overview', lastData;
 const controllers = new Set();
+const disclosureState = new Map();
+document.addEventListener('toggle', event => {
+  const detail=event.target;
+  if(detail.matches?.('details[data-disclosure]') && detail.isConnected)
+    disclosureState.set(detail.dataset.disclosure,detail.open);
+},true);
 const stamp = value => value ? new Date(value).toLocaleString(locale(), { hour12:false }) : '—';
 const number = value => Number(value || 0).toLocaleString(locale());
 const duration = ms => { const m = Math.floor(ms / 60000); return m >= 1440 ? html`${Math.floor(m/1440)} 天 ${Math.floor(m%1440/60)} 小时` : m >= 60 ? html`${Math.floor(m/60)} 小时 ${m%60} 分` : html`${m} 分 ${Math.floor(ms%60000/1000)} 秒`; };
@@ -28,7 +35,7 @@ function notice(text, error = false) {
   clearTimeout(noticeTimer); if (!error) noticeTimer = setTimeout(() => $('message').hidden = true, 6000); $('message').textContent = error ? translateError(text) : text; $('message').className = 'toast' + (error ? ' error' : ''); $('message').hidden = false; }
 function lock() {
   clearSecurity(); $('login-factor').hidden=true; $('login-code').value=''; $('login-code').required=false;
-  epoch++; navigation++; token = ''; apps = []; lastData = null;
+  epoch++; navigation++; token = ''; apps = []; lastData = null; disclosureState.clear();
   for (const c of controllers) c.abort(); controllers.clear();
   $('management').hidden = true; $('login-panel').hidden = false; $('content').replaceChildren();
   $('modal').close(); $('modal').replaceChildren(); $('admin-token').value = ''; $('message').hidden = true;
@@ -96,20 +103,26 @@ function renderList(v, params) {
   return heading(titles[current],note) + filters(params,current) + panel(t('记录列表'),html`每页 ${v.limit} 条`, table(headers,rows) + pager(v));
 }
 function chart(samples,key,label,color){return renderChart(samples,key,label,color);}
-function uptime(v, m) {
-  const start=Math.floor(v.time/3600000)*3600000-23*3600000;
-  const bins=Array.from({length:24},(_,i)=>v.probes.find(p=>p.monitor===m.monitor && p.time===start+i*3600000));
-  const success=m.samples ? (100*m.successes/m.samples).toFixed(2) : '—';
-  return html`<div class="health-row"><div>${esc(m.monitor)}<p>最后采样 ${esc(stamp(m.lastSeen))}</p></div>${badge(v.time-m.lastSeen<120000?t('探针活跃'):t('探针数据过期'),v.time-m.lastSeen<120000?'green':'amber')}</div><p><strong>${success}%</strong> <span class="muted">已采样请求成功率 · ${m.samples} 个样本</span></p><svg class="uptime" viewBox="0 0 720 36" role="img" aria-label="过去24小时探针状态">${bins.map((b,i)=>html`<rect x="${i*30}" y="0" width="24" height="32" rx="3" fill="${!b?'var(--chart-unknown)':b.successes<b.samples?'var(--chart-red)':'var(--chart-green)'}"><title>${esc(stamp(start+i*3600000))} · ${b ? html`${b.successes}/${b.samples} 成功`:t('未知')}</title></rect>`).join('')}</svg>`;
-}
 function renderMonitor(v) {
+  const resultSeries=[{key:'accepted',label:'已接受',color:'var(--chart-green)'},{key:'failed',label:'失败',color:'var(--chart-red)'},{key:'unknown',label:'结果未知',color:'var(--chart-amber)'}];
+  const queueSeries=[{key:'queued',label:'等待',color:'var(--chart-blue)'},{key:'retrying',label:'重试中',color:'var(--chart-amber)'},{key:'sending',label:'发送中',color:'var(--chart-green)'}];
+  const start=Math.floor((v.time-86400000)/3600000)*3600000;
+  const results=Array.from({length:25},(_,i)=>({time:start+i*3600000,accepted:0,failed:0,unknown:0}));
+  for(const b of v.buckets){const row=results.find(r=>r.time===b.time);if(row)row[b.state]=b.count;}
+  const q=v.queueStatus,backup=v.backupSummary;
+  const channelRows=['apns','fcm'].map(channel=>{
+    const counts=Object.fromEntries(v.results.filter(r=>r.channel===channel).map(r=>[r.state,r.count]));
+    const total=(counts.accepted||0)+(counts.failed||0)+(counts.unknown||0);
+    return [channel.toUpperCase(),number(counts.accepted||0),number(counts.failed||0),number(counts.unknown||0),total?(100*(counts.accepted||0)/total).toFixed(1)+'%':t('暂无数据')];
+  });
+  const names={ok:'按时成功',failed:'失败',overdue:'备份逾期',unverified:'尚无成功备份',disabled:'未启用'};
+  const backupCard=(label,item)=>html`<div class="health-row"><div>${t(label)}<p>${item.lastSuccess?esc(stamp(item.lastSuccess)):t('尚无成功备份')}</p></div>${badge(t(names[item.status]),item.status==='ok'?'green':item.status==='disabled'?'':'amber')}</div>`;
   const samples=v.samples.map(s=>({...s,rss:s.rss/1048576}));
-  return heading(t('运行监控'),t('真实采样与独立探测，区分运行时长、可用性和推送结果。')) +
-    html`<div class="metrics">${metric(t('本次 Uptime'),duration(v.uptime),esc(stamp(v.startedAt)))}${metric(t('进程内存'),(v.memory.rss/1048576).toFixed(1)+' <small>MB</small>',t('RSS · 当前实例'))}${metric(t('待处理任务'),number(v.queue),t('排队、重试与发送中'))}${metric(t('外部探针'),number(v.monitors.length),t('过去 24 小时有上报的探针'))}</div>` +
-    panel(t('可用性 · 最近 24 小时'),t('每格 1 小时 · 红色表示该小时至少一次探测失败'),html`<div class="panel-body">${v.monitors.length ? v.monitors.map(m=>uptime(v,m)).join('') : empty(t('尚未接入独立探针'),t('当前不能计算历史可用率。部署 uptime-probe.mjs 后开始积累数据。'))}<div class="legend"><span><i></i>采样成功</span><span><i class="down"></i>存在失败</span><span><i class="unknown"></i>未知 / 未采样</span></div><p class="help">成功率仅针对已采样请求，不将缺失样本视为正常运行。建议在另一台机器运行探针，才能观测网关主机故障。</p><details><summary>探针接入说明</summary><p class="help">在独立主机运行 <code>node uptime-probe.mjs</code>。设置 GATEWAY_URL、GATEWAY_MONITOR_TOKEN_FILE 和 PROBE_DATA_DIR；专用令牌来自网关数据目录的 monitor.token。探针断线时本地保存采样，恢复后补报。不要使用管理令牌。</p></details></div>`) +
-    html`<div class="split monitor-charts">${panel(t('内存历史'),t('每分钟采样 · 最近 24 小时'),html`<div class="panel-body">${chart(samples,'rss',t('进程驻留内存 MB'))}</div>`)}${panel(t('接口耗时'),t('一分钟内完成请求的平均耗时'),html`<div class="panel-body">${chart(samples,'latency',t('平均请求耗时 ms'),'var(--chart-amber)')}</div>`)}</div>` +
-    html`<div class="split monitor-charts">${panel(t('请求量'),t('每分钟完成的 HTTP 请求'),html`<div class="panel-body">${chart(samples,'requests',t('每分钟请求数'))}</div>`)}${panel(t('队列积压'),t('采样时等待发送与重试的任务'),html`<div class="panel-body">${chart(samples,'queued',t('等待任务数'),'var(--chart-blue)')}</div>`)}</div>` +
-    panel(t('实例运行历史'),t('异常退出只保留最后心跳；最后心跳之后的时段不视为在线'),table([t('启动时间'),t('最后心跳'),t('停止时间'),t('状态')],v.runs.map(r=>[esc(stamp(r.started)),esc(stamp(r.heartbeat)),esc(stamp(r.stopped)),badge(r.id===v.runId && !r.stopped?t('当前实例'):r.stopped?t('正常停止'):t('未记录正常停止'),r.id===v.runId && !r.stopped?'green':'')])));
+  return heading(t('运行监控'),t('关注推送结果、队列处理和备份；服务可用性由外部 Uptime 监控。'))+
+    panel(t('推送结果 · 最近 24 小时'),t('按结果更新时间统计；厂商接受不代表设备送达。'),html`<div class="panel-body">${renderStackedChart(results,resultSeries,'推送结果')}${table([t('通道'),t('已接受'),t('失败'),t('结果未知'),t('接受率')],channelRows)}${v.failures.length?html`<details data-disclosure="monitor-failures"><summary>${t('失败原因')}</summary>${table([t('通道'),t('原因'),t('数量')],v.failures.map(r=>[esc(r.channel.toUpperCase()),esc(r.reason),number(r.count)]))}<a href="#deliveries">${t('查看推送记录')}</a></details>`:''}</div>`)+
+    panel(t('队列处理'),t('等待、重试与发送中使用相同统计口径；计划中的重试不算调度逾期。'),html`<div class="panel-body"><div class="metrics">${metric(t('待处理任务'),number(q.queued+q.retrying+q.sending),t('等待 / 重试 / 发送中'))}${metric(t('最老等待时间'),duration(q.oldestWaitSeconds*1000),t('包含重试等待时间'))}${metric(t('调度逾期'),number(q.overdue),t('超过计划执行时间 5 分钟'))}${metric(t('发送超时'),number(q.stuck),t('发送中超过 2 分钟'))}</div>${(!v.diagnostics.lastSampleAt||v.time-v.diagnostics.lastSampleAt>120000)?html`<p class="callout">${t('监控采样已过期')}</p>`:''}${q.workerError?html`<p class="callout">${t('队列轮询失败，请检查日志。')}</p>`:''}${renderStackedChart(v.queueSamples,queueSeries,'队列处理',60000)}<p class="help">${t('采样间隔一分钟；缺失采样不表示队列为空。')}</p></div>`)+
+    panel(t('备份状态'),t('按备份周期加 1 小时宽限判断逾期；成功备份不代表已验证恢复。'),html`<div class="panel-body">${backupCard('本地备份',backup.local)}${backupCard('异地备份',backup.remote)}${!backup.workerOnline?html`<p class="callout">${t('备份进程未连接')}</p>`:''}</div>`,html`<a href="#backups">${t('备份与恢复')} →</a>`)+
+    html`<details class="panel diagnostics-panel" data-disclosure="monitor-diagnostics"><summary><span>${t('诊断详情')}</span><span class="disclosure-chevron" aria-hidden="true"></span></summary><div class="panel-body"><p>${t('本次 Uptime')} · ${duration(v.uptime)} · RSS ${(v.memory.rss/1048576).toFixed(1)} MB</p><p>${t('最近成功采样')} · ${esc(stamp(v.diagnostics.lastSampleAt))} · ${t('采样失败次数')} ${number(v.diagnostics.sampleFailures)}</p><p>${t('队列轮询失败次数')} ${number(q.workerFailures)}</p>${chart(samples,'rss',t('进程驻留内存 MB'))}${table([t('启动时间'),t('最后心跳'),t('停止时间')],v.runs.map(r=>[esc(stamp(r.started)),esc(stamp(r.heartbeat)),esc(stamp(r.stopped))]))}</div></details>`;
 }
 async function load(quiet = false) {
   if (!token) return;
@@ -124,7 +137,8 @@ async function load(quiet = false) {
     if(turn!==navigation || generation!==epoch)return;
     apps=listing.applications; catalog=listing.channels;
     let markup;
-    if(route==='backups') { lastData=await api('/admin/backups'); markup=renderBackups(lastData); }
+    if(route==='abuse') { lastData=await api('/admin/abuse'); markup=renderAbuse(lastData); }
+    else if(route==='backups') { lastData=await api('/admin/backups'); markup=renderBackups(lastData); }
     else if(route==='settings') { lastData=await api('/admin/settings'); markup=renderMaintenance(lastData); }
     else if(route==='security') { lastData=await api('/admin/security'); markup=renderSecurity(lastData); }
     else if(route==='apps') markup=renderApps();
@@ -138,7 +152,14 @@ async function load(quiet = false) {
       lastData=data;
       markup=route==='overview'?renderOverview(data):route==='monitor'?renderMonitor(data):renderList(data,params);
     }
-    if(turn===navigation && generation===epoch) $('content').innerHTML=markup;
+    if(turn===navigation && generation===epoch) {
+      // Capture the latest user choice, including a toggle while the request was in flight.
+      for(const detail of $('content').querySelectorAll('details[data-disclosure]'))
+        disclosureState.set(detail.dataset.disclosure,detail.open);
+      $('content').innerHTML=markup;
+      for(const detail of $('content').querySelectorAll('details[data-disclosure]'))
+        detail.open=disclosureState.get(detail.dataset.disclosure)??false;
+    }
   } catch(error) {
     if(turn!==navigation || generation!==epoch)return;
     if(!quiet) $('content').innerHTML=empty(t('无法加载页面'),esc(translateError(error.message))+t('<p><button data-action="refresh">重试</button></p>'));
@@ -383,3 +404,5 @@ initializeCharts({t,esc,stamp});
 initializeMaintenance({t,esc,api,action,modal,notice,load});
 
 initializeBackups({t,esc,stamp,api,action,notice,load});
+
+initializeAbuse({t,esc,api,action,notice,load});

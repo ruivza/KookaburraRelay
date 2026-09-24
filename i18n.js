@@ -1,6 +1,77 @@
 // Only developer-authored strings and template literal segments are translated.
 // Values interpolated into html (application names, IDs, logs) remain untouched.
 const english = Object.fromEntries(`
+资源保护|Resource protection
+限制登记与投递资源；暂停登记不影响已有设备确认和投递。|Bound registration and delivery resources. Pausing enrollment preserves confirmation and delivery for existing devices.
+允许新设备登记|Allow new device registrations
+全局登记 / 分钟|Registrations per minute, global
+每应用登记 / 分钟|Registrations per minute, per app
+全局挑战 / 日|Challenges per day, global
+每应用挑战 / 日|Challenges per day, per app
+全局待确认登记|Pending registrations, global
+每应用待确认登记|Pending registrations, per app
+挑战发送并发|Concurrent challenges
+全局新任务 / 日|New tasks per day, global
+每应用新任务 / 日|New tasks per day, per app
+每设备新任务 / 日|New tasks per day, per device
+全局投递尝试 / 日|Delivery attempts per day, global
+每应用投递尝试 / 日|Delivery attempts per day, per app
+日额度按 UTC 零点重置；修改设置不会清空已用额度。每应用使用相同的独立额度。|Daily quotas reset at midnight UTC. Saving does not reset usage. Each app has its own allowance at the same configured limit.
+本次运行的保护统计|Protection statistics for this run
+正在处理请求|Active requests
+正在发送挑战|Active challenges
+省略的请求日志|Omitted request logs
+资源清理失败|Resource cleanup failures
+请求日志最多每分钟 120 条，最多并行写入 8 条；管理审计独立保留。统计在重启后归零。|Request logs are capped at 120 per minute and 8 concurrent writes. Admin audit records are separate. Statistics reset on restart.
+拒绝原因|Rejection reason
+Gateway resource limit|Gateway resource limit
+Invalid abuse settings|Invalid resource protection settings
+暂无采样数据|No samples yet
+开始采样后显示队列趋势。|Queue trends will appear after sampling starts.
+已采样时刻没有待处理任务|No pending tasks at sampled times
+最近 24 小时暂无推送结果|No push outcomes in the last 24 hours
+缺失采样时段不计入正常状态。|Missing samples do not count as healthy periods.
+产生推送结果后，这里会显示趋势。|The trend will appear when push outcomes are recorded.
+
+失败|Failed
+原因|Reason
+数量|Count
+暂无数据|No data
+结果未知|Unknown outcome
+已接受|Accepted
+等待|Waiting
+重试中|Retrying
+发送中|Sending
+按时成功|Up to date
+备份逾期|Backup overdue
+尚无成功备份|No successful backup
+关注推送结果、队列处理和备份；服务可用性由外部 Uptime 监控。|Push outcomes, queue processing and backups. External Uptime monitors availability.
+推送结果 · 最近 24 小时|Push outcomes · Last 24 hours
+按结果更新时间统计；厂商接受不代表设备送达。|Grouped by outcome update time. Provider acceptance does not confirm device delivery.
+推送结果|Push outcomes
+接受率|Acceptance rate
+失败原因|Failure reasons
+查看推送记录|View delivery records
+队列处理|Queue processing
+等待、重试与发送中使用相同统计口径；计划中的重试不算调度逾期。|Includes waiting, retrying and sending. Scheduled retries are not overdue.
+等待 / 重试 / 发送中|Waiting / retrying / sending
+最老等待时间|Oldest waiting task
+包含重试等待时间|Includes retry delays
+调度逾期|Overdue tasks
+超过计划执行时间 5 分钟|More than 5 minutes past scheduled execution
+发送超时|Stalled sends
+发送中超过 2 分钟|Sending for more than 2 minutes
+队列轮询失败，请检查日志。|Queue polling failed. Check the logs.
+监控采样已过期|Monitoring samples are stale
+采样间隔一分钟；缺失采样不表示队列为空。|Sampled every minute. Missing samples do not mean an empty queue.
+备份状态|Backup status
+按备份周期加 1 小时宽限判断逾期；成功备份不代表已验证恢复。|Overdue after the backup interval plus a 1-hour grace period. Successful backups do not confirm recoverability.
+备份进程未连接|Backup worker disconnected
+诊断详情|Diagnostics
+最近成功采样|Last successful sample
+采样失败次数|Sampling failures
+队列轮询失败次数|Queue polling failures
+
 外观|Appearance
 跟随系统|System
 浅色|Light

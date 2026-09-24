@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {chartModel,nearestPoint,initializeCharts,renderChart} from '../monitor-charts.js';
+import {chartModel,nearestPoint,initializeCharts,renderChart,renderStackedChart} from '../monitor-charts.js';
 test('chart scale contains real values, integer counts and zero series',()=>{
  for(const [key,values] of [['rss',[80,113.45]],['latency',[.003,.017]],['requests',[0,1]],['queued',[0,0]]]){
   const m=chartModel(values.map((value,i)=>({time:100000+i*60000,[key]:value})),key);
@@ -21,4 +21,12 @@ test('charts provide units, accessible navigation and escaped data',()=>{
  const output=renderChart([{time:60000,rss:123.45}],'rss','memory <unsafe>');
  assert(output.includes('MB'));assert(output.includes('chart-axis'));assert(output.includes('tabindex="0"'));assert(!output.includes('<unsafe>'));
  assert(!output.includes('NaN'));assert(!renderChart([],'rss','empty').includes('<svg'));
+});
+
+test('stacked queues preserve real time gaps and expose every state accessibly',()=>{
+ initializeCharts({t:x=>x,esc:s=>String(s).replaceAll('"','&quot;').replaceAll('<','&lt;'),stamp:String});
+ const output=renderStackedChart([{time:0,queued:1,sending:2},{time:600000,queued:0,sending:3}], [{key:'queued',label:'Waiting',color:'blue'},{key:'sending',label:'Sending',color:'green'}],'Queue',60000);
+ assert(output.includes('Waiting: 1 / Sending: 2'));assert(output.includes('tabindex="0"'));assert(!output.includes('NaN'));
+ assert.match(output,/x="509\.09/);
+ assert(!output.includes('style="'));
 });

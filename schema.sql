@@ -4,6 +4,10 @@ CREATE TABLE IF NOT EXISTS applications(id TEXT PRIMARY KEY,name TEXT NOT NULL,e
 CREATE TABLE IF NOT EXISTS app_channels(app_id TEXT NOT NULL,kind TEXT NOT NULL,enabled INTEGER NOT NULL,secret TEXT NOT NULL,PRIMARY KEY(app_id,kind));
 CREATE TABLE IF NOT EXISTS registrations(id TEXT PRIMARY KEY,device_id TEXT NOT NULL,server_id TEXT NOT NULL,token TEXT NOT NULL,token_hash TEXT NOT NULL,environment TEXT NOT NULL,nonce TEXT NOT NULL,challenge_hash TEXT,expires BIGINT NOT NULL,delivery_hash TEXT UNIQUE,revoke_hash TEXT UNIQUE,credentials TEXT,last_sent BIGINT NOT NULL DEFAULT 0,app_id TEXT NOT NULL DEFAULT 'perch-mail',channel TEXT NOT NULL DEFAULT 'apns',app_revision TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS limits(key TEXT PRIMARY KEY,start BIGINT NOT NULL,count INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS abuse_settings(id INTEGER PRIMARY KEY CHECK(id=1),settings JSONB NOT NULL);
+CREATE TABLE IF NOT EXISTS abuse_quotas(key TEXT PRIMARY KEY,start BIGINT NOT NULL,expires BIGINT NOT NULL,count INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS abuse_quota_expiry ON abuse_quotas(expires);
+CREATE INDEX IF NOT EXISTS registration_pending ON registrations(app_id,expires) WHERE delivery_hash IS NULL;
 CREATE TABLE IF NOT EXISTS delivery_jobs(id TEXT PRIMARY KEY,registration_id TEXT NOT NULL,app_id TEXT NOT NULL,channel TEXT NOT NULL,device_id TEXT NOT NULL,mode TEXT NOT NULL,dedupe TEXT UNIQUE,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,created BIGINT NOT NULL,updated BIGINT NOT NULL,next_at BIGINT NOT NULL,expires BIGINT NOT NULL,status INTEGER NOT NULL DEFAULT 0,reason TEXT NOT NULL DEFAULT '',duration BIGINT NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS delivery_due ON delivery_jobs(state,next_at);
 CREATE INDEX IF NOT EXISTS delivery_app ON delivery_jobs(app_id,created);
@@ -29,3 +33,6 @@ CREATE INDEX IF NOT EXISTS backup_jobs_due ON backup_jobs(state,next_at);
 CREATE TABLE IF NOT EXISTS backup_worker(id INTEGER PRIMARY KEY CHECK(id=1),heartbeat BIGINT NOT NULL);
 
 ALTER TABLE backup_jobs ADD COLUMN IF NOT EXISTS remote_version TEXT;
+
+CREATE TABLE IF NOT EXISTS gateway_queue_samples(time BIGINT PRIMARY KEY,queued BIGINT NOT NULL,retrying BIGINT NOT NULL,sending BIGINT NOT NULL,oldest_wait_seconds DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS delivery_result_time ON delivery_jobs(updated) WHERE state IN ('accepted','failed','unknown');

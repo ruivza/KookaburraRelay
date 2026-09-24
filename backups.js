@@ -23,6 +23,17 @@ export class Backups {
       lastRemoteSuccess:(await this.db.prepare("SELECT max(finished) time FROM backup_jobs WHERE remote_status='completed' AND kind='backup' AND config_revision=?").get(row.settings.revision)).time,
       jobs:await this.db.prepare('SELECT * FROM backup_jobs ORDER BY created DESC,id DESC LIMIT 30').all()};
   }
+  async summary(){
+    const row=await this.row(),time=this.now();
+    const worker=await this.db.prepare('SELECT heartbeat FROM backup_worker WHERE id=1').get();
+    const local=(await this.db.prepare("SELECT max(local_completed) time FROM backup_jobs WHERE kind='backup' AND local_status='completed'").get()).time;
+    const remote=(await this.db.prepare("SELECT max(finished) time FROM backup_jobs WHERE kind='backup' AND remote_status='completed' AND config_revision=?").get(row.settings.revision)).time;
+    const latest=await this.db.prepare("SELECT state,error,local_status,remote_status FROM backup_jobs WHERE kind='backup' AND config_revision=? ORDER BY created DESC,id DESC LIMIT 1").get(row.settings.revision);
+    const status=(last,failed)=>failed?'failed':last===null?'unverified':time-last>row.settings.intervalHours*3600000+3600000?'overdue':'ok';
+    return {workerOnline:!!worker&&worker.heartbeat>time-120000,intervalHours:row.settings.intervalHours,
+      local:{lastSuccess:local,status:status(local,latest?.local_status==='failed')},
+      remote:{lastSuccess:remote,status:row.settings.enabled?status(remote,latest?.remote_status==='failed'):'disabled'}};
+  }
   async save(body){
     const input=body.settings;
     if(!input||typeof input.enabled!=='boolean')fail(400,'Invalid backup settings');
