@@ -1,3 +1,13 @@
+// Keep the short-lived session across reloads in this tab; never store login credentials.
+function readSession() {
+  try { return sessionStorage.getItem('kookaburra.admin.session') || ''; } catch { return ''; }
+}
+function saveSession(value) {
+  try {
+    if (value) sessionStorage.setItem('kookaburra.admin.session', value);
+    else sessionStorage.removeItem('kookaburra.admin.session');
+  } catch { /* Storage can be disabled; the current page can still sign in. */ }
+}
 import {initializeAccess,renderAccess,renderServers,renderAlerts} from './access-ui.js';
 import {initializeAbuse,renderAbuse} from './abuse-ui.js';
 import {initializeCharts,renderChart,renderStackedChart} from './monitor-charts.js';
@@ -11,7 +21,7 @@ const getTitles = () => ({ access:t('接入与验证'),servers:t('服务器接�
 let titles = getTitles();
 const getStates = () => ({ queued:[t('已入队'),'blue'], retrying:[t('等待重试'),'amber'], sending:[t('发送中'),'blue'], accepted:[t('通道已接受'),'green'], failed:[t('发送失败'),'red'], unknown:[t('结果未知'),'amber'], cancelled:[t('已取消'),''] });
 let states = getStates();
-let token = '', epoch = 0, navigation = 0, apps = [], catalog = [], busy = false, current = 'overview', lastData;
+let token = readSession(), epoch = 0, navigation = 0, apps = [], catalog = [], busy = false, current = 'overview', lastData;
 const controllers = new Set();
 const disclosureState = new Map();
 document.addEventListener('toggle', event => {
@@ -35,6 +45,7 @@ function notice(text, error = false) {
   }
   clearTimeout(noticeTimer); if (!error) noticeTimer = setTimeout(() => $('message').hidden = true, 6000); $('message').textContent = error ? translateError(text) : text; $('message').className = 'toast' + (error ? ' error' : ''); $('message').hidden = false; }
 function lock() {
+  saveSession('');
   clearSecurity(); $('login-factor').hidden=true; $('login-code').value=''; $('login-code').required=false;
   epoch++; navigation++; token = ''; apps = []; lastData = null; disclosureState.clear();
   for (const c of controllers) c.abort(); controllers.clear();
@@ -216,7 +227,7 @@ function confirmAction(title, description, path, method='DELETE', body) {
 $('login').onsubmit=event=>{event.preventDefault();void action(async()=>{
   const result=await api('/auth/login','POST',{token:$('admin-token').value.trim(),code:$('login-code').value.trim()});
   if(result.requiresSecondFactor){$('login-factor').hidden=false;$('login-code').required=true;$('login-code').focus();return;}
-  token=result.session;$('admin-token').value='';$('login-code').value='';
+  token=result.session;saveSession(token);$('admin-token').value='';$('login-code').value='';
   $('management').hidden=false;$('login-panel').hidden=true;await load();
 });};
 $('logout').onclick=()=>void action(async()=>{await api('/admin/logout','POST',{});lock();});
@@ -424,3 +435,9 @@ initializeBackups({t,esc,stamp,api,action,notice,load});
 initializeAbuse({t,esc,api,action,notice,load});
 
 initializeAccess({t,esc,api,action,notice,load,modal});
+
+if (token) {
+  $('management').hidden=false;
+  $('login-panel').hidden=true;
+  void load();
+}
