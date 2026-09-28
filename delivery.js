@@ -14,15 +14,29 @@ export class DeliveryQueue {
     if (autoStart) this.start();
   }
   start() {
-    if (!this.timer && !this.stopping) this.timer = setInterval(() => { void this.poll(); }, 1000).unref();
+    if (!this.timer && !this.stopping) {
+      this.timer = setInterval(() => this.wake(), 1000).unref();
+      this.wake();
+    }
+  }
+  wake() {
+    this.wakeRequested = true;
+    this.resumeWake?.();
+    if (this.timer && !this.stopping && !this.wakeScheduled) {
+      this.wakeScheduled = true;
+      queueMicrotask(() => { this.wakeScheduled = false; if (!this.stopping) void this.poll(); });
+    }
   }
   async poll() {
     if(this.polling)return this.polling;
     this.polling=(async()=>{
       try { await this.flush(); this.lastSuccessAt=this.now(); this.lastErrorAt=null; }
-      catch { this.failures++; this.lastErrorAt=this.now(); console.error('Delivery worker cycle failed'); }
+      catch { this.wakeRequested=false; this.failures++; this.lastErrorAt=this.now(); console.error('Delivery worker cycle failed'); }
     })();
-    try { await this.polling; } finally { this.polling=null; }
+    try { await this.polling; } finally {
+      this.polling=null;
+      if (this.wakeRequested && !this.stopping) this.wake();
+    }
   }
   async get(id) { return (await this.db.prepare('SELECT * FROM delivery_jobs WHERE id=?').get(id)); }
   public(job) { if (!job) fail(404, 'Task not found'); const { dedupe, notification, notification_hash, notification_sealed, ...safe } = job; return safe; }
@@ -30,7 +44,7 @@ export class DeliveryQueue {
     const content = deliveryContent(kind, notification, alert, this.now());
     const encoded = content ? JSON.stringify(content) : '';
     const contentHash = encoded ? createHash('sha256').update(encoded).digest('hex') : '';
-    return this.db.transaction(async () => {
+    const job = await this.db.transaction(async () => {
       await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
       await this.db.query('SELECT pg_advisory_xact_lock(72841103)');
       entry = await this.db.prepare('SELECT * FROM registrations WHERE id=? AND expires>? FOR UPDATE').get(entry.id,this.now());
@@ -55,6 +69,8 @@ export class DeliveryQueue {
       (await this.db.prepare('UPDATE registrations SET last_sent=? WHERE id=?').run(time, entry.id));
     return (await this.get(id));
     });
+    if (mode === 'async' && this.timer) this.wake();
+    return job;
   }
   async cancelRegistration(id) {
     (await this.db.prepare("UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason='RegistrationRevoked',updated=? WHERE registration_id=? AND state IN ('queued','retrying','sending')").run(this.now(), id));
@@ -71,7 +87,7 @@ export class DeliveryQueue {
     if (this.slots.size >= this.concurrency) fail(503, 'Workers busy');
     let finish;
     const slot = { done: new Promise(resolve => { finish = resolve; }) };
-    slot.release = () => { this.slots.delete(slot); finish(); };
+    slot.release = () => { if (this.slots.delete(slot)) { finish(); if (this.timer && !this.flushing) this.wake(); } };
     this.slots.add(slot);
     return slot;
   }
@@ -152,15 +168,51 @@ export class DeliveryQueue {
     } finally { slot.release(); }
   }
   async flush() {
-    if (this.stopping) return;
-    const capacity = this.concurrency - this.slots.size;
-    if (capacity <= 0) return;
-    const jobs = (await this.db.prepare("SELECT id FROM delivery_jobs WHERE mode='async' AND state IN ('queued','retrying') AND next_at<=? ORDER BY created LIMIT ?").all(this.now(), capacity));
-    await Promise.all(jobs.map(j => this.execute(j.id)));
+    if (this.flushing) return this.flushing;
+    this.flushing = this.drain();
+    try { await this.flushing; } finally { this.flushing = null; }
+  }
+  async drain() {
+    const pending = new Set();
+    let failure;
+    try {
+      while (!this.stopping) {
+        if (failure) throw failure;
+        this.wakeRequested = false;
+        const capacity = this.concurrency - this.slots.size;
+        if (capacity > 0) {
+          // An executor may still be validating a queued row before claiming it.
+          const active = [...this.active.keys()];
+          const excluded = active.length ? ` AND id NOT IN (${active.map(() => '?').join(',')})` : '';
+          const jobs = await this.db.prepare("SELECT id FROM delivery_jobs WHERE mode='async' AND state IN ('queued','retrying') AND next_at<=?" + excluded + " ORDER BY created,id LIMIT ?").all(this.now(), ...active, capacity);
+          for (const job of jobs) {
+            // Legacy admission can consume slots while the query is running.
+            if (this.stopping || this.slots.size >= this.concurrency) break;
+            const work = this.execute(job.id);
+            pending.add(work);
+            // Attach the rejection handler immediately; drain still reports failures.
+            work.then(() => pending.delete(work), error => { failure = error; pending.delete(work); });
+          }
+        }
+        if (failure) throw failure;
+        if (!pending.size) {
+          if (this.wakeRequested) continue;
+          break;
+        }
+        if (this.wakeRequested) continue;
+        const wake = new Promise(resolve => { this.resumeWake = resolve; });
+        try { await Promise.race([...pending, wake]); }
+        finally { this.resumeWake = null; }
+      }
+    } finally {
+      await Promise.allSettled([...pending]);
+    }
   }
   async close() {
     this.stopping = true;
     clearInterval(this.timer);
+    this.resumeWake?.();
+    await this.flushing;
     await Promise.allSettled([...this.slots].map(slot => slot.done));
   }
 }

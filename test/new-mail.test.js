@@ -8,7 +8,7 @@ import { createGateway } from './helpers.mjs';
 test('mail alerts require an explicit scoped grant and survive the delivery queue', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mail-alert-')), sent = [];
   const admin = 'alert-test-operator'.repeat(3); let now = Date.now();
-  const app = await createGateway({ dataDir: dir, adminToken: admin, now: () => now,
+  const app = await createGateway({ dataDir: dir, adminToken: admin, now: () => now, autoStart: false,
     providerFactory: () => ({ async send(device, token, payload) { sent.push(payload); return { status: 200 }; }, close() {} }) });
   await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${app.server.address().port}`;

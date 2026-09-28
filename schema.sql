@@ -61,3 +61,10 @@ CREATE TABLE IF NOT EXISTS alert_settings(id INTEGER PRIMARY KEY CHECK(id=1),set
 CREATE TABLE IF NOT EXISTS alert_incidents(kind TEXT PRIMARY KEY,active INTEGER NOT NULL,last_queued BIGINT NOT NULL);
 CREATE TABLE IF NOT EXISTS alert_notifications(id TEXT PRIMARY KEY,created BIGINT NOT NULL,kind TEXT NOT NULL,state TEXT NOT NULL,payload JSONB NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_at BIGINT NOT NULL,revision TEXT NOT NULL,error TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS alert_notification_due ON alert_notifications(state,next_at);
+
+-- Admission and revocation touch only outstanding work for one registration.
+CREATE INDEX IF NOT EXISTS delivery_registration_active ON delivery_jobs(registration_id)
+  WHERE state IN ('queued','retrying','sending');
+
+-- Dashboard day totals and latest jobs span all applications.
+CREATE INDEX IF NOT EXISTS delivery_created ON delivery_jobs(created DESC);
