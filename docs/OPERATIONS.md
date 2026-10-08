@@ -1,5 +1,18 @@
 # Operations
 
+## Prebuilt installation
+
+Download the source archive, gateway image archive and backup image archive for your platform from [Releases](https://github.com/ruivza/KookaburraRelay/releases). Verify them against `SHA256SUMS`, extract the source, then load both images:
+
+```sh
+docker load -i kookaburra-relay-0.1.1-linux-amd64.tar.gz
+docker load -i kookaburra-relay-backup-0.1.1-linux-amd64.tar.gz
+```
+
+Use `arm64` archives on ARM hosts. For a fresh installation, run `umask 077; cp .env.example .env` and replace `POSTGRES_PASSWORD` with a long random hex password. Set `GATEWAY_IMAGE=kookaburra-relay:0.1.1` and `GATEWAY_BACKUP_IMAGE=kookaburra-relay-backup:0.1.1`, then run `docker compose up -d --no-build --wait`. Keep an existing deployment's `.env` and data volumes.
+
+GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.1` and `ghcr.io/ruivza/kookaburrarelay-backup:0.1.1`. Their package visibility must be public for anonymous pulls; repository visibility does not change it automatically.
+
 ## Configuration
 
 | Variable | Purpose |

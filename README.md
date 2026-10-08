@@ -60,7 +60,7 @@ Devices register by confirming a challenge received through APNs / FCM. Business
 
 GitHub Actions tests and builds gateway and backup images for `linux/amd64` and `linux/arm64`. See the [workflow](.github/workflows/docker.yml); publication status is determined by its run results.
 
-Prebuilt images: `ghcr.io/ruivza/kookaburrarelay:0.1.1` and `ghcr.io/ruivza/kookaburrarelay-backup:0.1.1`. Set `GATEWAY_IMAGE` and `GATEWAY_BACKUP_IMAGE` in `.env`, then run `./install.sh`.
+Releases include source archives and Docker installation archives for both platforms. See [prebuilt installation](docs/OPERATIONS.md#prebuilt-installation). GHCR images are also published; their visibility is configured separately on GitHub.
 
 ## License
 

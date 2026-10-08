@@ -91,7 +91,7 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
-            type=sha
+            type=sha,format=long
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
@@ -127,8 +127,48 @@ jobs:
           platforms: linux/amd64
           push: false
           cache-from: type=gha,scope=${{ matrix.dockerfile }}
+  container-archives:
+    needs: docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        suffix: ['', '-backup']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Export Docker installation archive
+        shell: bash
+        env:
+          IMAGE_SUFFIX: ${{ matrix.suffix }}
+          IMAGE_ARCH: ${{ matrix.arch }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          remote="ghcr.io/${GITHUB_REPOSITORY,,}${IMAGE_SUFFIX}:sha-${GITHUB_SHA}"
+          local="kookaburra-relay${IMAGE_SUFFIX}:${version}"
+          docker pull --platform "linux/${IMAGE_ARCH}" "$remote"
+          docker tag "$remote" "$local"
+          mkdir dist
+          docker save "$local" | gzip > "dist/kookaburra-relay${IMAGE_SUFFIX}-${version}-linux-${IMAGE_ARCH}.tar.gz"
+          tar -tzf "dist/kookaburra-relay${IMAGE_SUFFIX}-${version}-linux-${IMAGE_ARCH}.tar.gz" > /dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: container-${{ matrix.arch }}${{ matrix.suffix }}
+          path: dist/*
+          retention-days: 7
   source:
-    needs: [test, docker]
+    needs: [test, docker, container-archives]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -151,6 +191,13 @@ jobs:
           mkdir dist
           git archive --format=tar.gz --prefix="${name}/" HEAD > "dist/${name}.tar.gz"
           git archive --format=zip --prefix="${name}/" HEAD > "dist/${name}.zip"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: container-*
+          merge-multiple: true
+          path: dist
+      - name: Checksum release files
+        run: |
           cd dist
           sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

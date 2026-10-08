@@ -98,7 +98,7 @@ function renderChannels(kind) {
   const items = selectedApp ? apps.filter(a => a.id === selectedApp) : apps;
   return heading(android ? t('Android 通道') : t('APNs 通道'),descriptions) +
     html`<div class="callout">${android ? t('FCM 通道已实现，需上传 Firebase 服务账号 JSON。Android 客户端需接入挑战确认协议；本项目尚未提供 Android App。') : t('私钥加密保存，不会回显。开发环境与生产环境需要匹配设备 token；保存配置仅校验格式，不代表 Apple 已授权或真机已送达。')}</div>` +
-    (selectedApp ? '<p><a class="muted" href="#'+current+t('">← 显示全部应用</a></p>') : '') +
+    (selectedApp ? '<p><a class="muted" href="#'+(android?'android':'apns')+t('">← 显示全部应用</a></p>') : '') +
     (items.length ? html`<div class="cards">${items.map(a => { const c = a[kind]; return html`<section class="channel-card"><div class="panel-head"><div class="channel-logo"><svg class="icon" aria-hidden="true"><use href="#icon-${android ? 'android' : 'phone'}"></use></svg></div>${badge(!a.enabled ? t('应用已停用') : c.hasKey ? c.enabled ? t('已配置') : t('通道已停用') : t('待配置'),a.enabled && c.enabled ? 'green':'')}</div><h3>${esc(a.name)}</h3><p>${esc(a.id)}</p><div class="kv"><span>${android ? t('Firebase 项目'):'Bundle ID'}</span><strong>${esc((android ? c.projectId:c.topic)||'—')}</strong><span>环境</span><strong>${esc(android ? t('生产'):({production:t('生产'),sandbox:t('开发'),both:t('开发 + 生产')}[c.environment]))}</strong><span>已验证设备</span><strong>${number(a.registrations)} <span>（应用总计）</span></strong></div><div class="row-actions"><button data-action="configure" data-id="${esc(a.id)}" data-kind="${kind}">${c.hasKey ? t('编辑配置'):t('配置通道')}</button>${c.hasKey ? html`<button class="quiet danger" data-action="remove-channel" data-id="${esc(a.id)}" data-kind="${kind}">移除</button><button class="quiet" data-action="test-channel" data-id="${esc(a.id)}" data-kind="${kind}">测试</button>`:''}</div></section>`; }).join('')}</div>` : empty(t('请先创建应用'),t('<a href="#apps">前往应用管理 →</a>'))) +
     (android ? html`<div class="page-heading"><div><h1>其他厂商通道</h1><p>以下通道尚未实现，不接受设备登记或推送。</p></div></div><div class="cards">${catalog.filter(c=>c.platform==='android' && !c.implemented).map(c=>html`<section class="channel-card"><h3>${esc(language === 'en' ? ({huawei:'Huawei',xiaomi:'Xiaomi',oppo:'OPPO',vivo:'vivo',honor:'Honor'}[c.id] || c.name) : c.name)}</h3>${badge(t('尚未接入'))}<p>需要独立适配厂商认证、设备登记和发送接口。</p></section>`).join('')}</div>` : '');
 }
@@ -139,7 +139,7 @@ function renderMonitor(v) {
 async function load(quiet = false) {
   if (!token) return;
   const [requested,query=''] = location.hash.slice(1).split('?');
-  current = titles[requested] ? requested : 'overview';
+  current = Object.hasOwn(titles,requested) ? requested : 'overview';
   const route = current, turn = ++navigation, generation = epoch, params = new URLSearchParams(query);
   $('breadcrumb').textContent=titles[current];
   document.querySelectorAll('[data-page]').forEach(a=>{if(a.tagName==='A'){ a.classList.toggle('active',a.dataset.page===current); if(a.dataset.page===current)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current'); }});

@@ -10,3 +10,4 @@
 - Cache Google OAuth tokens safely and reduce public status queries from seven to three without decrypting vendor credentials.
 - Index probe timestamps for history queries and retention.
 - Test, scan, and package source archives and amd64/arm64 images through GitHub Actions with pinned actions, SBOM, and provenance.
+- Harden console routes, set the Docker data directory to mode 0700, and provide public Docker installation archives with checksums.

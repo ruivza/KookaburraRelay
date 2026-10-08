@@ -6,7 +6,7 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY --chown=node:node LICENSE THIRD_PARTY_NOTICES.md ./
 COPY --chown=node:node *.js *.mjs *.sql *.html *.css ./
 COPY --chown=node:node assets ./assets
-RUN mkdir -p /app/data && chown node:node /app/data
+RUN mkdir -p /app/data && chmod 0700 /app/data && chown node:node /app/data
 USER node
 ENV NODE_ENV=production GATEWAY_HOST=0.0.0.0 GATEWAY_PORT=3220 GATEWAY_DATA_DIR=/app/data
 EXPOSE 3220
