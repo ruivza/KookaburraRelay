@@ -16,6 +16,8 @@ CREATE INDEX IF NOT EXISTS gateway_log_time ON gateway_logs(time);
 CREATE TABLE IF NOT EXISTS gateway_runs(id TEXT PRIMARY KEY,started BIGINT NOT NULL,heartbeat BIGINT NOT NULL,stopped BIGINT);
 CREATE TABLE IF NOT EXISTS gateway_samples(time BIGINT PRIMARY KEY,rss BIGINT NOT NULL,heap BIGINT NOT NULL,requests BIGINT NOT NULL,errors BIGINT NOT NULL,latency DOUBLE PRECISION NOT NULL,queued BIGINT NOT NULL);
 CREATE TABLE IF NOT EXISTS gateway_probes(monitor TEXT NOT NULL,time BIGINT NOT NULL,ok INTEGER NOT NULL,latency INTEGER NOT NULL,PRIMARY KEY(monitor,time));
+-- Dashboard history and retention filter across every monitor by time.
+CREATE INDEX IF NOT EXISTS gateway_probe_time ON gateway_probes(time);
 CREATE TABLE IF NOT EXISTS admin_security(id INTEGER PRIMARY KEY CHECK(id=1),token_hash TEXT NOT NULL,totp_secret TEXT,last_step BIGINT NOT NULL DEFAULT -1,pending_secret TEXT,pending_until BIGINT,recovery_hashes JSONB NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS admin_sessions(hash TEXT PRIMARY KEY,expires BIGINT NOT NULL);
 INSERT INTO schema_migrations VALUES(1) ON CONFLICT DO NOTHING;

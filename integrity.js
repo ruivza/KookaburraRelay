@@ -50,7 +50,8 @@ export function validateGoogleVerdict(verdict,{policy,payload,now=Date.now()}) {
     !Number.isSafeInteger(time) || time>now+30000 || time<now-300000 ||
     a?.packageName!==policy.packageName || a?.appRecognitionVerdict!=='PLAY_RECOGNIZED' ||
     !Array.isArray(a.certificateSha256Digest) || !a.certificateSha256Digest.some(d=>policy.certificateDigests.includes(d)) ||
-    !verdict.deviceIntegrity?.deviceRecognitionVerdict?.includes('MEETS_DEVICE_INTEGRITY') ||
+    !Array.isArray(verdict?.deviceIntegrity?.deviceRecognitionVerdict) ||
+    !verdict.deviceIntegrity.deviceRecognitionVerdict.includes('MEETS_DEVICE_INTEGRITY') ||
     verdict.accountDetails?.appLicensingVerdict!=='LICENSED') invalid();
   return true;
 }
@@ -65,14 +66,38 @@ export class GoogleIntegrity {
       return JSON.parse(Buffer.concat(chunks).toString());
     } catch { throw Object.assign(Error('Application verification temporarily unavailable'),{status:503,retryAfter:60}); }
   }
+  async accessToken(credential) {
+    const key=createHash('sha256').update(credential.clientEmail).update('\0').update(credential.privateKey).digest('hex');
+    if(this.oauth?.key===key && this.oauth.expires>this.now()+60000)return this.oauth.token;
+    if(this.oauthPending?.key===key)return this.oauthPending.promise;
+    // Keep one cached token; concurrent refreshes for the current credential share a promise.
+    const pending={key};
+    this.oauthPending=pending;
+    pending.promise=(async()=>{
+      const started=this.now(),issued=Math.floor(started/1000),encode=v=>Buffer.from(JSON.stringify(v)).toString('base64url');
+      const unsigned=encode({alg:'RS256',typ:'JWT'})+'.'+encode({iss:credential.clientEmail,scope:'https://www.googleapis.com/auth/playintegrity',aud:'https://oauth2.googleapis.com/token',iat:issued,exp:issued+3600});
+      const assertion=unsigned+'.'+sign('RSA-SHA256',Buffer.from(unsigned),credential.privateKey).toString('base64url');
+      const oauth=await this.json('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion}).toString()});
+      if(typeof oauth?.access_token!=='string'||!oauth.access_token)throw Object.assign(Error('Application verification temporarily unavailable'),{status:503,retryAfter:60});
+      if(this.oauthPending===pending&&Number.isSafeInteger(oauth.expires_in)&&oauth.expires_in>60){
+        this.oauth={key,token:oauth.access_token,expires:started+Math.min(3600,oauth.expires_in)*1000};
+      }
+      return oauth.access_token;
+    })();
+    try{return await pending.promise;}
+    finally{if(this.oauthPending===pending)this.oauthPending=null;}
+  }
   async verify({proof,payload,policy,credential}) {
     if (typeof proof.integrityToken!=='string' || proof.integrityToken.length<20 || proof.integrityToken.length>20000) invalid();
-    const issued=Math.floor(this.now()/1000), encode=v=>Buffer.from(JSON.stringify(v)).toString('base64url');
-    const unsigned=encode({alg:'RS256',typ:'JWT'})+'.'+encode({iss:credential.clientEmail,scope:'https://www.googleapis.com/auth/playintegrity',aud:'https://oauth2.googleapis.com/token',iat:issued,exp:issued+3600});
-    const assertion=unsigned+'.'+sign('RSA-SHA256',Buffer.from(unsigned),credential.privateKey).toString('base64url');
-    const oauth=await this.json('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion}).toString()});
-    if(typeof oauth.access_token!=='string')throw Object.assign(Error('Application verification temporarily unavailable'),{status:503});
-    const decoded=await this.json(`https://playintegrity.googleapis.com/v1/${policy.packageName}:decodeIntegrityToken`,{method:'POST',headers:{Authorization:'Bearer '+oauth.access_token,'Content-Type':'application/json'},body:JSON.stringify({integrity_token:proof.integrityToken})});
+    const token=await this.accessToken(credential);
+    let decoded;
+    try{
+      decoded=await this.json(`https://playintegrity.googleapis.com/v1/${policy.packageName}:decodeIntegrityToken`,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({integrity_token:proof.integrityToken})});
+    }catch(error){
+      // Do not retain a token the remote service rejected; the next request can obtain a fresh one.
+      if(this.oauth?.token===token)this.oauth=null;
+      throw error;
+    }
     validateGoogleVerdict(decoded.tokenPayloadExternal,{policy,payload,now:this.now()});
   }
 }

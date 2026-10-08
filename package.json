@@ -1,13 +1,22 @@
 {
   "name": "kookaburra-relay",
+  "description": "Self-hosted APNs and FCM push gateway with a bilingual admin console and encrypted PostgreSQL storage",
   "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ruivza/KookaburraRelay.git"
+  },
+  "homepage": "https://github.com/ruivza/KookaburraRelay#readme",
+  "bugs": "https://github.com/ruivza/KookaburraRelay/issues",
   "type": "module",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --env-file-if-exists=.env --test test/*.test.js",
+    "test": "node --test test/*.test.js",
+    "check": "node scripts/check.mjs",
     "db:up": "docker compose -p kookaburra-relay up -d --wait",
     "db:migrate": "node --env-file-if-exists=.env migrate-sqlite.mjs"
   },
@@ -19,5 +28,5 @@
     "pg": "^8.23.0",
     "qrcode": "^1.5.4"
   },
-  "version": "0.1.0"
+  "version": "0.1.1"
 }

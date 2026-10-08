@@ -1,45 +1,74 @@
-# 通用通知协议
+# Notification protocol
 
-网关负责应用与设备授权、路由、限流、重试及厂商适配。业务含义、密钥交换及解密属于业务 Server 和客户端。网关没有 Mohua 专用发送分支。
+The gateway authorizes applications and devices, routes notifications, limits resources, and adapts APNs / FCM. Business content, key exchange, and client decryption belong to the integrating application.
 
-| kind | 用途 | APNs | FCM |
-| --- | --- | --- | --- |
-| sync | 静默同步提示，不保证后台运行 | 支持 | 支持 |
-| alert | 可读的标题和内容 | 支持 | 支持 |
-| encrypted_alert | 密文与通用兜底提醒 | 支持 | 不支持，登记返回 501 |
+## Capabilities
 
-## 应用管理和授权
+| Kind | APNs | FCM |
+| --- | --- | --- |
+| `sync` | Supported | Supported |
+| `alert` | Supported | Supported |
+| `encrypted_alert` | Supported | Registration rejected with 501 |
 
-应用编辑界面可分别勾选三种能力；加密通知的兜底标题、内容位于默认收起的高级设置。加密通知始终请求系统通知音，用户可在手机系统设置中关闭声音。旧配置中的 fallback.sound:false 在读取时归一为 true，无需重新保存。普通通知仍保留每条消息的 sound 参数。修改兜底文案不会撤销登记或取消队列任务；修改通知能力保留已有登记。应用配置的 `notifications` 示例：
+Configure an application's allowed `notifications.kinds` in the console. New applications and legacy grants default to `sync`. Both the grant and the current application configuration must allow each requested kind. Enabling a kind does not upgrade existing credentials. Disabling it cancels its unfinished jobs and pending registrations; confirmed grants remain but cannot use a disabled kind.
 
 ```json
 {"kinds":["sync","alert","encrypted_alert"],"fallback":{"title":"Notes","body":"You have an update"}}
 ```
 
-旧应用和新应用默认只有 sync。状态接口仅公布应用和渠道共同支持的能力。新增能力不会扩大旧凭证权限，客户端需为新能力申请授权；关闭能力后，对应请求返回 403，仅取消该类型未完成任务并清除其待确认登记，已确认登记及其他类型任务保留。重新开启后，未过期且原本包含该能力的凭证可继续使用；已取消任务不会恢复。已交给 APNs/FCM 的推送无法撤回。应用启停和通道凭据变更仍撤销登记；名称及兜底文案变更不影响登记。
+Encrypted fallback alerts always request the system sound; users retain OS-level sound controls. Legacy `fallback.sound:false` is normalized to true. Ordinary alerts retain per-message sound control. Renaming or changing fallback text preserves registrations; application/channel disablement or credential changes revoke them.
 
-沿用设备证明登记流程，请求增加 `kinds:["sync","alert"]` 等明确的能力集合；或用 `purpose:"encrypted_alert"` 便捷申请 sync 与 encrypted_alert，两者不能同时传入。省略时仅 sync。确认响应返回授权 kinds。发送时同时检查凭证授权及应用当前能力。旧 sync 凭证不能发送可见提醒。
+## Device registration
 
-## 发送内容
+Read application readiness and capabilities with `GET /v1/status?appId=notes`; read proof requirements with `GET /v1/access?appId=notes`.
 
-沿用 `/v1/notify` 或 `/v1/jobs` 的设备 Bearer 凭证和 appId/deviceId/serverId；jobs 另需 requestId。普通提醒的附加字段：
+Send `POST /v1/registrations`:
 
 ```json
-{"kind":"alert","alert":{"title":"会议提醒","body":"会议即将开始","sound":false}}
+{"appId":"notes","platform":"ios","channel":"apns","deviceId":"device-1","serverId":"server-1","deviceToken":"<APNs token>","environment":"sandbox","nonce":"<at least 32 characters>","kinds":["sync","alert"]}
 ```
 
-标题和内容均为字符串，最多 120 和 400 个 Unicode 字符，不能同时为空，不接受控制字符。sound 为布尔值，默认 true。普通提醒的内容对网关和推送厂商可读；队列中使用网关密钥加密存储，不属于端到端加密。
+Identifiers use letters, digits, underscores, and hyphens, up to 100 characters. APNs tokens are hexadecimal and normalized to lowercase. FCM uses `platform:"android"`, `channel:"fcm"`, `environment:"production"`; token case is preserved. Instead of `kinds`, `purpose:"alert"` or `purpose:"encrypted_alert"` requests that kind plus `sync`; do not send both fields. Omission requests only `sync`.
 
-加密提醒使用 `kind:"encrypted_alert"` 和 `encryptedNotification:{version:1,keyId,id,expires,ephemeralKey,ciphertext}`。信封仅支持当前 P-256 / HKDF-SHA256 / AES-256-GCM profile，公钥为 65 字节 X9.63 标准 Base64，keyId 为 64 位小写 hex，id 为 UUID 形式，expires 为未来最多 24 小时的 Unix 毫秒，ciphertext 为 28–2400 字节的标准 Base64（nonce + 密文 + tag）。网关校验结构但不解密；业务两端须约定 HKDF、AAD 和明文结构。Mohua 使用自己的 sender/subject 内容和 mohua-notification-v1 域分隔，其他应用可约定自己的内容。
+When required, add a `serverTicket` and platform `integrity` proof as described in [access policies](ACCESS_SECURITY.md).
 
-加密通知可省略信封，仅显示应用配置的兜底文案。APNs 设置 mutable-content:1，由应用 Notification Service Extension 解密替换。解密失败或扩展未运行时保留兜底。普通 alert 不启动解密扩展。
+HTTP 202 returns a registration ID and expiry, never the reception challenge or credentials. APNs delivers a `perchRegistration` object; FCM delivers the same object as a JSON string in `data.perchRegistration`. The client submits the received proof to `POST /v1/registrations/:id/confirm`. Verify its application, device, server, and nonce before confirming.
 
-APNs 可见提醒携带通用 `relay:{version:1,appId,deviceId,serverId,kind}`；加密提醒另有 encryptedNotification。FCM 普通提醒将 relay 作为 JSON 字符串放在 data 中。客户端应校验作用域。旧静默 perch、设备证明 perchRegistration 字段保留兼容。
+Confirmation returns `registrationId`, `appId`, authorized `kinds`, `credential`, `revokeToken`, and `expiresAt`. Give only the delivery credential to the business server; keep the revoke token on the client. Credentials expire after 30 days. Revoke with `DELETE /v1/registrations/:id` using the revoke token as Bearer authorization.
 
-sync 禁止附加可见内容，普通和加密内容不能混用。任务响应不返回内容；同一 requestId 更换内容返回 409。任务完成或取消清除内容，重试保留受保护内容。APNs 最终 payload 超过 4096 字节拒绝发送。
+## Sending
 
-## Mohua 迁移
+Use `Authorization: Bearer <device delivery credential>` and matching `appId`, `deviceId`, `serverId`, and `kind`. Approved-server integrations also send `X-Relay-Server-Credential`. `POST /v1/validate` checks the grant for that scope.
 
-更新网关、Mohua Server/mail-worker、iOS app 和通知扩展；在网关 Mohua 应用启用 sync + encrypted_alert 并设置“你有新邮件”的兜底文案，然后由客户端重新登记和上传通知公钥。内部 new_mail 邮件事件由 Mohua Server 转换为通用 encrypted_alert。网关不接收可读邮件头或正文。没有给既有同步凭证自动提升权限。
+```json
+{"appId":"notes","deviceId":"device-1","serverId":"server-1","kind":"alert","alert":{"title":"Reminder","body":"Your meeting starts soon","sound":false}}
+```
 
-上述是代码能力，不代表已部署或完成真实厂商送达验证。FCM 加密通知需要后续实现 Android 解密客户端和对应适配。
+Use `/v1/notify` for synchronous provider acceptance or `/v1/jobs` for asynchronous delivery. Jobs additionally require a stable `requestId` of 16–100 letters, digits, underscores, or hyphens. HTTP 202 means queued, while HTTP 200 from `/v1/notify` means accepted by the provider. Neither proves delivery. Query `GET /v1/jobs/:id` with the same credentials; job responses omit content. See [queue semantics](docs/OPERATIONS.md#delivery-queue).
+
+Ordinary `alert` requires string title and body, limited to 120 and 400 Unicode code points. They cannot both be blank or contain control characters. `sound` is boolean and defaults to true. The gateway and provider can read ordinary alerts; queued content is encrypted at rest, not end-to-end encrypted.
+
+`sync` cannot carry ordinary or encrypted alert content. One `requestId` with changed content returns 409. Terminal or cancelled jobs clear stored content; retries retain protected content. The final APNs payload cannot exceed 4096 bytes. Honor 429/503 and `Retry-After`; temporary rate limits do not imply permanent credential revocation.
+
+## Encrypted alerts
+
+Send `kind:"encrypted_alert"` with an optional `encryptedNotification` object:
+
+| Field | Validation |
+| --- | --- |
+| `version` | `1` |
+| `keyId` | 64 lowercase hexadecimal characters |
+| `id` | 36-character lowercase hexadecimal/hyphen identifier |
+| `expires` | Future Unix milliseconds, at most 24 hours ahead |
+| `ephemeralKey` | Canonical Base64, 65-byte uncompressed public-key encoding starting with `0x04` |
+| `ciphertext` | Canonical Base64, 28–2400 bytes: nonce + ciphertext + tag |
+
+The advertised profile is `p256-hkdf-sha256-aes256gcm-v1`. The sender and client must agree on key identifiers, HKDF parameters, AAD, and plaintext structure. The gateway validates the envelope shape and does not decrypt or validate business content. Omitting the envelope sends only the configured fallback.
+
+APNs uses `mutable-content:1`; the client's Notification Service Extension decrypts and replaces the fallback. Failed decryption or an extension that does not run leaves the fallback visible. Ordinary alerts do not invoke this decryption flow. FCM encrypted alerts require a future adapter and Android decryption integration.
+
+## Provider payloads
+
+Visible APNs alerts carry `relay:{version:1,appId,deviceId,serverId,kind}`; encrypted alerts additionally carry `encryptedNotification`. FCM ordinary alerts put `relay` in `data` as a JSON string. Clients must validate their scope.
+
+Legacy field names remain for compatibility: sync uses `perch`, and reception proof uses `perchRegistration`. FCM encodes both as JSON strings. FCM sync uses normal priority, ordinary alerts use high priority; background delivery may be delayed by the OS.

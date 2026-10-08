@@ -269,3 +269,35 @@ test("configuration changes during a challenge cannot activate an obsolete grant
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('public status reads configuration without decrypting secrets or scanning delivery history',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'relay-status-'));
+ const app=await createGateway({dataDir:dir,adminToken:admin,autoStart:false,
+  providerFactory:()=>({send(){},close(){}}),fcmFactory:()=>({send(){},close(){}})});
+ const queries=[];let tracking=false;
+ const query=app.db.query.bind(app.db);
+ app.db.query=(sql,values)=>{if(tracking)queries.push(sql);return query(sql,values);};
+ await new Promise(r=>app.server.listen(0,'127.0.0.1',r));
+ const base='http://127.0.0.1:'+app.server.address().port;
+ const status=async(channel='apns')=>{
+  tracking=true;
+  try{const r=await fetch(base+'/v1/status?channel='+channel);assert.equal(r.status,200);return r.json();}
+  finally{tracking=false;}
+ };
+ try{
+  assert.equal((await status()).ready,false);
+  await app.applications.update('perch-mail',{name:'Mail',enabled:true,apns:apns('com.example.status'),notifications:{kinds:['sync','alert','encrypted_alert']}});
+  await app.applications.configureChannel('perch-mail','fcm',{serviceAccount:{type:'service_account',project_id:'relay-test',client_email:'a@relay-test.iam.gserviceaccount.com',private_key:'fixture'}});
+  // The public status response only needs enabled flags and configured capabilities.
+  app.applications.channels.open=()=>{throw Error('Public status must not decrypt provider credentials');};
+  const ios=await status();
+  assert.deepEqual(ios,{protocol:1,appId:'perch-mail',ready:true,notificationEncryption:'p256-hkdf-sha256-aes256gcm-v1',kinds:['sync','alert','encrypted_alert']});
+  assert.deepEqual(await status('fcm'),{protocol:1,appId:'perch-mail',ready:true,notificationEncryption:null,kinds:['sync','alert']});
+  assert.deepEqual(await status('unimplemented'),{protocol:1,appId:'perch-mail',ready:false,notificationEncryption:null,kinds:[]});
+  await app.db.prepare("UPDATE app_channels SET enabled=0 WHERE app_id='perch-mail' AND kind='apns'").run();
+  assert.equal((await status()).ready,false);
+  await app.db.prepare("UPDATE applications SET enabled=0 WHERE id='perch-mail'").run();
+  assert.equal((await status('fcm')).ready,false);
+  assert.ok(!queries.some(sql=>/\b(delivery_jobs|registrations)\b/.test(sql)));
+ }finally{await app.close();rmSync(dir,{recursive:true,force:true});}
+});

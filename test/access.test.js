@@ -98,3 +98,39 @@ test('application task budgets are independent while the global ceiling remains 
   await assert.rejects(f.app.abuse.registration('second'),e=>e.reason==='registration_paused');
  }finally{await f.close();}
 });
+
+for(const change of ['policy','server'])test(change+' changes erase notification content when cancelling work',async()=>{
+  const f=await fixture();try{
+   await f.app.applications.update('perch-mail',{name:'Mail',enabled:true,notifications:{kinds:['sync','alert']}});
+   if(change==='server'){
+    await f.app.access.createServer({id:'server',name:'Business',apps:['perch-mail']});
+    await f.app.access.updateServer('server',{action:'approve'});
+   }
+   const grant=await f.enroll({...f.input(),kinds:['sync','alert']});
+   const entry=await f.app.db.prepare('SELECT * FROM registrations WHERE id=?').get(grant.registrationId);
+   const job=await f.app.queue.enqueue(entry,{requestId:'privacy-request-0001',kind:'alert',alert:{title:'Private title',body:'Private body'}});
+   assert.ok(job.notification);
+   if(change==='policy')await f.policy({});
+   else await f.app.access.updateServer('server',{action:'block'});
+   const cancelled=await f.app.queue.get(job.id);
+   assert.equal(cancelled.state,'cancelled');assert.equal(cancelled.notification,null);
+   await f.app.queue.flush();assert.equal(f.sent.length,1);
+  }finally{await f.close();}
+});
+
+test('startup erases interrupted request content and repairs older terminal job content',async()=>{
+ const f=await fixture();try{
+  await f.app.applications.update('perch-mail',{name:'Mail',enabled:true,notifications:{kinds:['sync','alert']}});
+  const ids=[];
+  for(const [n,state,mode]of [[1,'sending','async'],[2,'queued','legacy'],[3,'cancelled','async'],[4,'unknown','async'],[5,'accepted','async'],[6,'failed','async']]){
+   const grant=await f.enroll({...f.input(n),kinds:['sync','alert']});
+   const entry=await f.app.db.prepare('SELECT * FROM registrations WHERE id=?').get(grant.registrationId);
+   const job=await f.app.queue.enqueue(entry,{requestId:'privacy-request-000'+n,kind:'alert',alert:{title:'Private title',body:'Private body'}});
+   assert.ok(job.notification);
+   await f.app.db.prepare('UPDATE delivery_jobs SET state=?,mode=? WHERE id=?').run(state,mode,job.id);ids.push([job.id,['sending','queued'].includes(state)?'unknown':state]);
+  }
+  await f.restart();
+  for(const [id,state]of ids){const job=await f.app.queue.get(id);assert.equal(job.state,state);assert.equal(job.notification,null);}
+  await f.app.queue.flush();assert.equal(f.sent.length,6);
+ }finally{await f.close();}
+});

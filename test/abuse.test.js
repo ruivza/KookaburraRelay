@@ -32,8 +32,8 @@ async function fixture() {
       return { status: r.status, body: await r.json(), retryAfter: r.headers.get('retry-after') };
     },
     input(n = 1) { return { deviceId: 'phone-' + n, serverId: 'server', deviceToken: n.toString(16).padStart(64, 'a'), environment: 'sandbox', nonce: 'n'.repeat(40) }; },
-    async enroll(n = 1) {
-      const r = await this.call('/v1/registrations', this.input(n)); assert.equal(r.status, 202);
+    async enroll(n = 1, kinds) {
+      const r = await this.call('/v1/registrations', { ...this.input(n), ...(kinds ? { kinds } : {}) }); assert.equal(r.status, 202);
       const proof = sent.find(p => p.perchRegistration?.id === r.body.registrationId).perchRegistration;
       const grant = await this.call('/v1/registrations/' + proof.id + '/confirm', proof);
       assert.equal(grant.status, 200); return { ...grant.body, deviceId: proof.deviceId };
@@ -125,6 +125,46 @@ test('provider attempts have a separate quota; retry cannot call the provider af
     const job = await f.app.queue.get(r.body.id);
     assert.equal(job.status, 429); assert.equal(job.reason, 'GatewayQuota');
     assert.ok(job.next_at > Date.now() || job.next_at > job.updated);
+  } finally { await f.close(); }
+});
+
+test('expired registration cleanup cancels outstanding jobs and removes their notification content', async () => {
+  const f = await fixture();
+  try {
+    await f.app.applications.update('perch-mail', { name: 'Mail', enabled: true, notifications: { kinds: ['sync', 'alert'] } });
+    const grant = await f.enroll(1, ['sync', 'alert']);
+    const result = await f.call('/v1/jobs', { ...scope(grant), kind: 'alert', alert: { title: 'Private title', body: 'Private body' } }, grant.credential);
+    assert.equal(result.status, 202);
+    const job = await f.app.queue.get(result.body.id);
+    assert.ok(job.notification); assert.ok(!job.notification.includes('Private body'));
+    f.advance(31 * 86400000);
+    await f.app.abuse.cleanup();
+    const cancelled = await f.app.queue.get(job.id);
+    assert.equal(cancelled.state, 'cancelled');
+    assert.equal(cancelled.reason, 'RegistrationExpired');
+    assert.equal(cancelled.notification, null);
+    assert.equal(await f.app.db.prepare('SELECT id FROM registrations WHERE id=?').get(job.registration_id), undefined);
+    await f.app.queue.flush();
+    assert.equal(f.sent.length, 1); // The registration challenge is the only provider call.
+  } finally { await f.close(); }
+});
+
+for (const change of ['revocation', 'access policy']) test('task admission rechecks a stale registration after ' + change, async () => {
+  const f = await fixture();
+  try {
+    const grant = await f.enroll();
+    // Model a request that completed credential checks before another request revoked its grant.
+    const stale = await f.app.db.prepare('SELECT * FROM registrations WHERE id=?').get(grant.registrationId);
+    if (change === 'revocation') {
+      assert.equal((await f.call('/v1/registrations/' + stale.id, undefined, grant.revokeToken, undefined, 'DELETE')).status, 200);
+    } else {
+      const policy = await f.app.access.describe(stale.app_id);
+      await f.app.access.savePolicy(stale.app_id, { settings: policy.settings });
+    }
+    await assert.rejects(f.app.queue.enqueue(stale, { requestId: 'stale-request-0001' }), error => error.status === 410);
+    assert.equal((await f.app.db.prepare('SELECT count(*) n FROM delivery_jobs').get()).n, 0);
+    assert.equal((await f.app.db.prepare("SELECT count(*) n FROM abuse_quotas WHERE key LIKE 'task:%'").get()).n, 0);
+    assert.equal(f.sent.length, 1);
   } finally { await f.close(); }
 });
 

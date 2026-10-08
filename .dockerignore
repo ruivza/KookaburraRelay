@@ -10,3 +10,5 @@
 !*.css
 !assets/
 !assets/**
+!LICENSE
+!THIRD_PARTY_NOTICES.md

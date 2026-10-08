@@ -43,6 +43,12 @@ export class Applications {
       registrations: (await this.db.prepare('SELECT count(*) n FROM registrations WHERE app_id=? AND delivery_hash IS NOT NULL AND expires>?').get(id, this.now())).n };
   }
 
+  async publicStatus(id, channel) {
+    const row = await this.row(id);
+    const configured = await this.db.prepare('SELECT enabled FROM app_channels WHERE app_id=? AND kind=?').get(id, channel);
+    return { ready: !!row.enabled && !!configured?.enabled, kinds: await this.capabilities(id, channel) };
+  }
+
   async notifications(id) {
     const row = await this.db.prepare('SELECT settings FROM application_notifications WHERE app_id=?').get(id);
     return notificationSettings(row?.settings);

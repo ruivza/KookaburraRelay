@@ -5,7 +5,7 @@ test('encrypted envelope validator rejects plaintext, unknown fields, oversize a
  const now=1800000000000;
  const e={version:1,keyId:'a'.repeat(64),id:'11111111-1111-4111-8111-111111111111',expires:now+60000,ephemeralKey:Buffer.concat([Buffer.from([4]),Buffer.alloc(64)]).toString('base64'),ciphertext:Buffer.alloc(100).toString('base64')};
  assert.deepEqual(encryptedNotification(e,'encrypted_alert',now),e);
- for(const bad of [{...e,sender:'not allowed'},{...e,expires:now-1},{...e,ciphertext:Buffer.alloc(2401).toString('base64')},{...e,keyId:'bad'}]) assert.throws(()=>encryptedNotification(bad,'encrypted_alert',now));
+ for(const bad of [{...e,sender:'not allowed'},{...e,expires:now-1},{...e,ciphertext:Buffer.alloc(2401).toString('base64')},{...e,keyId:'bad'},{...e,keyId:[e.keyId]},{...e,id:[e.id]},{...e,id:'-'.repeat(36)}]) assert.throws(()=>encryptedNotification(bad,'encrypted_alert',now));
  assert.throws(()=>encryptedNotification(e,'sync',now));
 });
 

@@ -58,7 +58,7 @@ export class AccessControl {
       const previous=await this.policy(appId),encrypted=credential?this.seal(JSON.stringify(credential)):previous.secret;
       if(settings.androidRequired&&!encrypted)fail(400,'Google verification credential required');
       await this.db.prepare('INSERT INTO access_policies VALUES(?,?,?,?) ON CONFLICT(app_id) DO UPDATE SET settings=excluded.settings,revision=excluded.revision,google_secret=excluded.google_secret').run(appId,JSON.stringify(settings),randomUUID(),encrypted);
-      await this.db.prepare("UPDATE delivery_jobs SET state='cancelled',reason='AccessPolicyChanged',updated=? WHERE app_id=? AND state IN ('queued','retrying','sending')").run(this.now(),appId);
+      await this.db.prepare("UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason='AccessPolicyChanged',updated=? WHERE app_id=? AND state IN ('queued','retrying','sending')").run(this.now(),appId);
       await this.db.prepare('DELETE FROM registrations WHERE app_id=?').run(appId);
       await this.db.prepare('DELETE FROM integrity_keys WHERE app_id=?').run(appId);
       await this.db.prepare('DELETE FROM integrity_challenges WHERE app_id=?').run(appId);
@@ -87,7 +87,7 @@ export class AccessControl {
       if(body.action==='rotate'&&row.state!=='approved')fail(409,'Server is not approved');
       await this.db.prepare('UPDATE trusted_servers SET state=?,credential_hash=?,revision=? WHERE id=?').run(credential?'approved':'blocked',credential?hash(credential):null,randomUUID(),id);
       await this.db.prepare('DELETE FROM server_tickets WHERE server_id=?').run(id);
-      await this.db.prepare("UPDATE delivery_jobs SET state='cancelled',reason='ServerAccessChanged',updated=? WHERE registration_id IN (SELECT id FROM registrations WHERE server_id=?) AND state IN ('queued','retrying','sending')").run(this.now(),id);
+      await this.db.prepare("UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason='ServerAccessChanged',updated=? WHERE registration_id IN (SELECT id FROM registrations WHERE server_id=?) AND state IN ('queued','retrying','sending')").run(this.now(),id);
       await this.db.prepare('DELETE FROM registrations WHERE server_id=?').run(id);
     });
     return {id,state:credential?'approved':'blocked',...(credential?{credential}:{})};

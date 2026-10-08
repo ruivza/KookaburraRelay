@@ -5,7 +5,7 @@ import {Backups} from './backups.js';
 import { loadEncryption } from './master-key.js';
 import { clientAddressResolver } from './client-address.js';
 import {Maintenance} from './maintenance.js';
-// Private operator service. Excluded from the open-source server export.
+// Standalone push gateway and administrator HTTP API.
 import http from "node:http";
 import { Security } from "./security.js";
 import { Database } from "./database.js";
@@ -139,7 +139,9 @@ export async function createGateway({
     await alerts.initialize(autoStart);
     maintenance=new Maintenance({db,now,runId:monitor.runId});
     await maintenance.initialize(autoStart);
-    await db.prepare("UPDATE delivery_jobs SET state='unknown',reason='Interrupted',updated=? WHERE state='sending' OR (mode='legacy' AND state='queued')").run(now());
+    await db.prepare("UPDATE delivery_jobs SET state='unknown',notification=NULL,reason='Interrupted',updated=? WHERE state='sending' OR (mode='legacy' AND state='queued')").run(now());
+    // Repair content retained by cancellation paths in earlier gateway versions.
+    await db.exec("UPDATE delivery_jobs SET notification=NULL WHERE notification IS NOT NULL AND state IN ('accepted','failed','unknown','cancelled')");
     const monitorPath = resolve(dataDir, 'monitor.token');
     if (!existsSync(monitorPath)) writeFileSync(monitorPath, secret(), { mode: 0o600, flag: 'wx' });
     const monitorToken = readFileSync(monitorPath, 'utf8').trim();
@@ -307,12 +309,11 @@ export async function createGateway({
           const appId =
             new URL(req.url, "http://localhost").searchParams.get("appId") ||
             defaultApp;
-          const app = (await applications.describe(appId));
-          const kinds = await applications.capabilities(appId,url.searchParams.get("channel") || "apns");
+          const {ready,kinds} = await applications.publicStatus(appId,url.searchParams.get("channel") || "apns");
           return send(200, {
             protocol: 1,
             appId,
-            ready: app.enabled && !!app[url.searchParams.get("channel") || "apns"]?.enabled,
+            ready,
             notificationEncryption: kinds.includes("encrypted_alert") ? notificationAlgorithm : null,
             kinds,
           });

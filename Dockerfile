@@ -2,7 +2,8 @@ FROM node:24-alpine
 RUN apk add --no-cache age
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY --chown=node:node LICENSE THIRD_PARTY_NOTICES.md ./
 COPY --chown=node:node *.js *.mjs *.sql *.html *.css ./
 COPY --chown=node:node assets ./assets
 RUN mkdir -p /app/data && chown node:node /app/data

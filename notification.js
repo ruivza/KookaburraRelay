@@ -5,8 +5,8 @@ export function encryptedNotification(value, kind, now = Date.now()) {
   const fail = () => { throw Object.assign(Error('Invalid encrypted notification'), {status:400}); };
   if (kind !== 'encrypted_alert' || typeof value !== 'object' || Array.isArray(value)
     || Object.keys(value).sort().join(',') !== 'ciphertext,ephemeralKey,expires,id,keyId,version'
-    || value.version !== 1 || !/^[a-f0-9]{64}$/.test(value.keyId)
-    || !/^[a-f0-9-]{36}$/.test(value.id) || !Number.isSafeInteger(value.expires)
+    || value.version !== 1 || typeof value.keyId !== 'string' || !/^[a-f0-9]{64}$/.test(value.keyId)
+    || typeof value.id !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.id) || !Number.isSafeInteger(value.expires)
     || value.expires <= now || value.expires > now + 86400000) fail();
   const valid = (s,min,max) => {
     if (typeof s !== 'string') return false;
