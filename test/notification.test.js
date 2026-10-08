@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {encryptedNotification,deliveryContent,requestedKinds,notificationSettings} from '../notification.js';
+import {encryptedNotification,deliveryContent,requestedKinds,notificationSettings} from '../src/notification.js';
 test('encrypted envelope validator rejects plaintext, unknown fields, oversize and expired content',()=>{
  const now=1800000000000;
  const e={version:1,keyId:'a'.repeat(64),id:'11111111-1111-4111-8111-111111111111',expires:now+60000,ephemeralKey:Buffer.concat([Buffer.from([4]),Buffer.alloc(64)]).toString('base64'),ciphertext:Buffer.alloc(100).toString('base64')};
@@ -27,7 +27,7 @@ test('legacy encrypted fallback sound is normalized without changing content or 
 });
 
 test('APNs encrypted alerts request sound while background hints remain silent',async()=>{
- const {APNsChannel}=await import('../channels.js');
+ const {APNsChannel}=await import('../src/channels.js');
  let payload;
  const channel=new APNsChannel({},()=>({send(_target,_token,value){payload=value;return {status:200}}}));
  const target={device_id:'phone',app_id:'mail',server_id:'server',environment:'sandbox'};

@@ -1,4 +1,15 @@
-# Release review: 0.1.1
+# Release reviews
+
+## 0.1.2
+
+Review date: 2026-10-09. Directory changes received an independent code review and a separate regression run against an isolated PostgreSQL 18 database.
+
+- All 96 tests passed, none skipped. JavaScript and shell syntax checks and documentation links passed.
+- Startup from another working directory loads the installation root's `.env` and retains its default `data/`; authentication and graceful shutdown passed.
+- Gateway and backup Docker images built successfully. All 13 existing console URLs returned the packaged files; source, configuration, key and traversal paths remained inaccessible.
+- Backup imports, schema packaging, restore-script paths, Docker volumes and exclusion of secret files were verified.
+
+## 0.1.1
 
 Review date: 2026-10-09. Tests used an isolated PostgreSQL 18 database and simulated providers.
 

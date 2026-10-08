@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {DeliveryQueue} from '../delivery.js';
+import {DeliveryQueue} from '../src/delivery.js';
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
 function fixture(count=6){
   const jobs=Array.from({length:count},(_,i)=>({id:String(i),state:'queued'}));

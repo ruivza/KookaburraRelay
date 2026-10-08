@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, verify } from 'node:crypto';
-import { FCMChannel } from '../fcm.js';
+import { FCMChannel } from '../src/fcm.js';
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 export const account = { type:'service_account', project_id:'perch-test', client_email:'worker@perch-test.iam.gserviceaccount.com', private_key: privateKey.export({ type:'pkcs8', format:'pem' }) };
 test('FCM signs OAuth JWT, shares token refresh, preserves token case and classifies provider errors', async () => {

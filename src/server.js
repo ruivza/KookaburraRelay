@@ -36,7 +36,7 @@ export async function createGateway({
   databaseUrl = process.env.GATEWAY_DATABASE_URL,
   databaseSchema = process.env.GATEWAY_DATABASE_SCHEMA || "public",
   dataDir = process.env.GATEWAY_DATA_DIR ||
-    resolve(dirname(fileURLToPath(import.meta.url)), "data"),
+    resolve(dirname(fileURLToPath(import.meta.url)), "..", "data"),
   adminToken = process.env.GATEWAY_ADMIN_TOKEN,
   providerFactory,
   fcmFactory,
@@ -221,7 +221,7 @@ export async function createGateway({
         path = url.pathname;
         if (req.method === 'GET' && ['/logo.png','/favicon.png'].includes(path)) {
           res.writeHead(200, {'Content-Type':'image/png','Cache-Control':'public, max-age=3600','X-Content-Type-Options':'nosniff'});
-          return res.end(readFileSync(new URL('./assets'+path,import.meta.url)));
+          return res.end(readFileSync(new URL('../public/assets'+path,import.meta.url)));
         }
         if (path === '/favicon.ico' && req.method === 'GET') { res.writeHead(204); return res.end(); }
         if (path === "/healthz" && req.method === "GET") { (await db.prepare("SELECT 1").get()); return send(200, { status: "ok" }); }
@@ -232,14 +232,14 @@ export async function createGateway({
             "Content-Security-Policy":
               "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
           });
-          return res.end(readFileSync(new URL("./index.html", import.meta.url)));
+          return res.end(readFileSync(new URL("../public/index.html", import.meta.url)));
         }
         if (req.method === "GET" && ["/admin.js", "/theme.js", "/i18n.js", "/security-ui.js", "/maintenance-ui.js", "/monitor-charts.js", "/backups-ui.js", "/abuse-ui.js", "/access-ui.js", "/style.css"].includes(path)) {
           res.writeHead(200, {
             "Content-Type": path.endsWith(".js") ? "text/javascript" : "text/css",
             "X-Content-Type-Options": "nosniff",
           });
-          return res.end(readFileSync(new URL("." + path, import.meta.url)));
+          return res.end(readFileSync(new URL("../public" + path, import.meta.url)));
         }
         if (path.startsWith("/admin/")) {
           await security.authenticate(bearer(req));
@@ -361,7 +361,7 @@ if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-  if (existsSync(new URL("./.env",import.meta.url))) process.loadEnvFile(fileURLToPath(new URL("./.env",import.meta.url)));
+  if (existsSync(new URL("../.env",import.meta.url))) process.loadEnvFile(fileURLToPath(new URL("../.env",import.meta.url)));
   let app, stopping;
   function stop(code) {
     if (code) process.exitCode = code;

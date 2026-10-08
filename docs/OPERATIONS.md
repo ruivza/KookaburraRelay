@@ -5,13 +5,13 @@
 Download the source archive, gateway image archive and backup image archive for your platform from [Releases](https://github.com/ruivza/KookaburraRelay/releases). Verify them against `SHA256SUMS`, extract the source, then load both images:
 
 ```sh
-docker load -i kookaburra-relay-0.1.1-linux-amd64.tar.gz
-docker load -i kookaburra-relay-backup-0.1.1-linux-amd64.tar.gz
+docker load -i kookaburra-relay-0.1.2-linux-amd64.tar.gz
+docker load -i kookaburra-relay-backup-0.1.2-linux-amd64.tar.gz
 ```
 
-Use `arm64` archives on ARM hosts. For a fresh installation, run `umask 077; cp .env.example .env` and replace `POSTGRES_PASSWORD` with a long random hex password. Set `GATEWAY_IMAGE=kookaburra-relay:0.1.1` and `GATEWAY_BACKUP_IMAGE=kookaburra-relay-backup:0.1.1`, then run `docker compose up -d --no-build --wait`. Keep an existing deployment's `.env` and data volumes.
+Use `arm64` archives on ARM hosts. For a fresh installation, run `umask 077; cp .env.example .env` and replace `POSTGRES_PASSWORD` with a long random hex password. Set `GATEWAY_IMAGE=kookaburra-relay:0.1.2` and `GATEWAY_BACKUP_IMAGE=kookaburra-relay-backup:0.1.2`, then run `docker compose up -d --no-build --wait`. Keep an existing deployment's `.env` and data volumes.
 
-GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.1` and `ghcr.io/ruivza/kookaburrarelay-backup:0.1.1`. Their package visibility must be public for anonymous pulls; repository visibility does not change it automatically.
+GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.2` and `ghcr.io/ruivza/kookaburrarelay-backup:0.1.2`. Their package visibility must be public for anonymous pulls; repository visibility does not change it automatically.
 
 ## Configuration
 
@@ -20,7 +20,7 @@ GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.1` and `ghcr.io/ruivza/ko
 | `GATEWAY_DATABASE_URL` | Required PostgreSQL connection string for direct Node execution |
 | `GATEWAY_DATABASE_SCHEMA` | Schema; defaults to `public`, Compose uses `relay` |
 | `GATEWAY_HOST`, `GATEWAY_PORT` | Node listen address and port; defaults to `127.0.0.1:3220` |
-| `GATEWAY_DATA_DIR` | Master key and initial admin / monitor tokens; defaults to `data/` |
+| `GATEWAY_DATA_DIR` | Master key and initial admin / monitor tokens; defaults to repository-root `data/` |
 | `GATEWAY_ADMIN_TOKEN` | Optional initial administrator token, at least 32 characters |
 | `GATEWAY_TRUSTED_PROXIES` | Comma-separated verified proxy IP addresses / CIDRs |
 | `POSTGRES_PASSWORD` | Required Compose database password |
@@ -66,17 +66,17 @@ States are `queued`, `sending`, `retrying`, `accepted`, `failed`, `unknown`, and
 
 `/healthz` checks the process and PostgreSQL, not provider delivery. `/metrics` requires the separate `monitor.token`. It exposes queue, process, delivery, sampling, and backup metrics. Vendor acceptance rates exclude waiting, cancelled, and retrying jobs.
 
-Run `uptime-probe.mjs` on a separate Node.js 24+ host to monitor outages:
+Run `scripts/uptime-probe.mjs` from the repository root on a separate Node.js 24+ host to monitor outages:
 
 ```sh
 GATEWAY_URL=https://push.example.com \
 GATEWAY_MONITOR_TOKEN_FILE=/secure/monitor.token \
 PROBE_DATA_DIR=/var/lib/relay-probe \
 PROBE_NAME=external-1 \
-node uptime-probe.mjs
+node scripts/uptime-probe.mjs
 ```
 
-The probe stores failed samples in local SQLite and replays bounded batches after recovery. Missing samples stay unknown. A probe on the gateway host cannot establish external availability. Optional [webhook alerts](../ACCESS_SECURITY.md#webhook-alerts) cannot notify while the gateway itself is stopped.
+The probe stores failed samples in local SQLite and replays bounded batches after recovery. Missing samples stay unknown. A probe on the gateway host cannot establish external availability. Optional [webhook alerts](ACCESS_SECURITY.md#webhook-alerts) cannot notify while the gateway itself is stopped.
 
 Retention settings default to daily cleanup: request logs 14 days, error logs 30 days, audit logs 90 days, other history 30 days. Manual cleanup requires a one-use preview. Active jobs, credentials, and configuration are preserved. Deleted PostgreSQL records may release reusable space without immediately shrinking files. Cleanup removes deduplication history and does not replace backups.
 
@@ -116,7 +116,7 @@ Local success, remote upload success, worker health, and successful restore veri
 Stop the old gateway and save its SQLite database, WAL/SHM files, master key, and tokens. The source must already use the legacy multi-application schema. Prepare an empty PostgreSQL database or schema and keep the original master key in the new gateway data directory.
 
 ```sh
-node --env-file=.env migrate-sqlite.mjs /absolute/path/gateway.sqlite
+node --env-file=.env scripts/migrate-sqlite.mjs /absolute/path/gateway.sqlite
 ```
 
 Import validates fields in one transaction and refuses an initialized target. PostgreSQL writes make the old SQLite snapshot unsuitable for direct rollback. The external uptime probe still uses SQLite independently.

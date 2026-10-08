@@ -1,5 +1,5 @@
 import {DatabaseSync} from 'node:sqlite';
-import {Database} from './database.js';
+import {Database} from '../src/database.js';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
@@ -31,7 +31,7 @@ export async function migrate(source,db){
   }finally{sqlite.close();}
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
-  const source=process.argv[2];if(!source)throw Error('Usage: node --env-file=.env migrate-sqlite.mjs /path/to/stopped-gateway.sqlite');
+  const source=process.argv[2];if(!source)throw Error('Usage: node --env-file=.env scripts/migrate-sqlite.mjs /path/to/stopped-gateway.sqlite');
   const db=new Database(process.env.GATEWAY_DATABASE_URL,process.env.GATEWAY_DATABASE_SCHEMA||'public');
   try{console.log(JSON.stringify(await migrate(source,db),null,2));}finally{await db.close();}
 }

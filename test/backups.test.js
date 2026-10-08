@@ -6,10 +6,10 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createHash} from 'node:crypto';
 import {createGateway} from './helpers.mjs';
-import {BackupWorker} from '../backup-worker.js';
-import {B2Storage} from '../b2-storage.js';
-import {validateRecipient,encryptFile} from '../backup-crypto.js';
-import {totp} from '../security.js';
+import {BackupWorker} from '../src/backup-worker.js';
+import {B2Storage} from '../src/b2-storage.js';
+import {validateRecipient,encryptFile} from '../src/backup-crypto.js';
+import {totp} from '../src/security.js';
 const exec=promisify(execFile),admin='backup-test-admin-'.repeat(3);
 async function fixture(){
  const dir=mkdtempSync('/tmp/relay-backup-tests-');
@@ -148,7 +148,7 @@ test('real S3 SDK signs B2 requests and sends encrypted bytes with an explicit M
 });
 
 test('storage settings support providers and preserve legacy B2 configuration',async()=>{
- const {validateTarget,storageSettings}=await import('../storage-target.js');
+ const {validateTarget,storageSettings}=await import('../src/storage-target.js');
  const base={endpoint:'https://s3.us-west-004.backblazeb2.com',bucket:'test-bucket',prefix:'backups',keyId:'examplekey123'};
  assert.equal(validateTarget(base).region,'us-west-004');assert.equal(storageSettings(base).forcePathStyle,true);
  for(const target of [
@@ -182,7 +182,7 @@ test('changing storage providers requires replacement credentials and persists S
 });
 
 test('S3 SDK signs uploads for R2, AWS virtual hosts and custom path-style services',async()=>{
- const {Readable}=await import('node:stream');const {S3Storage}=await import('../s3-storage.js');
+ const {Readable}=await import('node:stream');const {S3Storage}=await import('../src/s3-storage.js');
  const f=await fixture();try{
   const file=f.dir+'/multi.age';await writeFile(file,'encrypted multi-provider fixture');
   for(const target of [
@@ -209,7 +209,7 @@ test('S3 SDK signs uploads for R2, AWS virtual hosts and custom path-style servi
 });
 
 test('fixed-name uploads create versions and deduplicate a lost response retry',async()=>{
- const {S3Storage}=await import('../s3-storage.js');const f=await fixture();try{
+ const {S3Storage}=await import('../src/s3-storage.js');const f=await fixture();try{
   const file=f.dir+'/version.age';const versions=[];let lost=false;
   const client={async send(command){const i=command.input;
    if(command.constructor.name==='GetBucketVersioningCommand')return {Status:'Enabled'};
@@ -234,7 +234,7 @@ test('fixed-name uploads create versions and deduplicate a lost response retry',
 });
 
 test('fixed-name uploads stop before writing if versioning is disabled or unreadable',async()=>{
- const {S3Storage}=await import('../s3-storage.js');const f=await fixture();try{
+ const {S3Storage}=await import('../src/s3-storage.js');const f=await fixture();try{
   const file=f.dir+'/version.age';await writeFile(file,'snapshot');
   for(const status of [undefined,'Suspended','denied']){
    let writes=0;const storage=new S3Storage(f.settings,'fixture-secret',{client:{async send(command){

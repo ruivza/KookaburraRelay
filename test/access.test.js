@@ -4,7 +4,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createGateway} from './helpers.mjs';
-import {accessDefaults} from '../access.js';
+import {accessDefaults} from '../src/access.js';
 async function fixture() {
   const dataDir=mkdtempSync(join(tmpdir(),'relay-access-'));let now=Date.now(),app;const sent=[];
   const options={dataDir,adminToken:'test-admin-'.repeat(5),autoStart:false,now:()=>now,

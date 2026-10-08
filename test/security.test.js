@@ -1,6 +1,6 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
-import {createGateway} from './helpers.mjs';import {totp,base32} from '../security.js';
+import {createGateway} from './helpers.mjs';import {totp,base32} from '../src/security.js';
 test('TOTP matches RFC 6238 SHA-1 vectors (six digit truncation)',()=>{const secret=base32(Buffer.from('12345678901234567890'));for(const [time,code]of [[59,'287082'],[1111111109,'081804'],[1111111111,'050471'],[1234567890,'005924'],[2000000000,'279037'],[20000000000,'353130']])assert.equal(totp(secret,time*1000),code);});
 test('two-step setup, replay protection, single-use recovery, rotation and session revocation',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'relay-security-'));let time=Date.now();const token='test-admin-token-'.repeat(3),next='new-admin-token-'.repeat(3);let app=await createGateway({dataDir:dir,adminToken:token,autoStart:false,now:()=>time});

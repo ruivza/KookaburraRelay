@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2 — 2026-10-09
+
+- Move backend code and schema to `src/`, console files and assets to `public/`, and CLI tools to `scripts/`.
+- Consolidate detailed guides under `docs/` and update links and commands.
+- Preserve root `.env` and `data/`, existing Docker volumes, `npm start`, `install.sh`, and public HTTP URLs.
+
 ## 0.1.1 — 2026-10-09
 
 - Prepare the standalone gateway for public distribution under MIT.

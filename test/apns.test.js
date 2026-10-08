@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { generateKeyPairSync, verify } from "node:crypto";
-import { APNsProvider } from "../apns.js";
+import { APNsProvider } from "../src/apns.js";
 test("APNs uses ES256, cached JWT and private background HTTP/2 payload", async () => {
   const { privateKey, publicKey } = generateKeyPairSync("ec", {
     namedCurve: "prime256v1",

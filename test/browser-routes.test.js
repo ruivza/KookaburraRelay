@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
-const source=readFileSync(new URL('../admin.js',import.meta.url),'utf8');
+const source=readFileSync(new URL('../public/admin.js',import.meta.url),'utf8');
 const titles=source.slice(source.indexOf('const getTitles'),source.indexOf('const getStates'));
 const channels=source.slice(source.indexOf('function renderChannels('),source.indexOf('function filters('));
 const load=source.slice(source.indexOf('async function load('),source.indexOf('function modal('));

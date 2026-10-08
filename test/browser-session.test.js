@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-const source = readFileSync(new URL('../admin.js', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../public/admin.js', import.meta.url), 'utf8');
 const helpers = source.slice(source.indexOf('function readSession'), source.indexOf("import "));
 const apiCode = source.slice(source.indexOf('async function api('), source.indexOf('async function action'));
 const lockCode = source.slice(source.indexOf('function lock()'), source.indexOf('async function api('));

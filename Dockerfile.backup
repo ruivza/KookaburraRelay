@@ -7,6 +7,7 @@ RUN apk add --no-cache age libstdc++
 COPY --from=dependencies /usr/local/bin/node /usr/local/bin/node
 WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
-COPY package.json *.js *.sql ./
+COPY package.json ./
+COPY src ./src
 COPY LICENSE THIRD_PARTY_NOTICES.md ./
-ENTRYPOINT ["node", "/app/backup-worker.js"]
+ENTRYPOINT ["node", "/app/src/backup-worker.js"]

@@ -21,7 +21,7 @@ Use HTTPS and restrict administrator access for public deployments. Protect the 
 ## Guides
 
 - [Setup](https://github.com/ruivza/KookaburraRelay#readme)
-- [Protocol](https://github.com/ruivza/KookaburraRelay/blob/main/NOTIFICATION_PROTOCOL.md)
-- [Access policies](https://github.com/ruivza/KookaburraRelay/blob/main/ACCESS_SECURITY.md)
+- [Protocol](https://github.com/ruivza/KookaburraRelay/blob/main/docs/NOTIFICATION_PROTOCOL.md)
+- [Access policies](https://github.com/ruivza/KookaburraRelay/blob/main/docs/ACCESS_SECURITY.md)
 - [Operations and recovery](https://github.com/ruivza/KookaburraRelay/blob/main/docs/OPERATIONS.md)
 - [Security](https://github.com/ruivza/KookaburraRelay/blob/main/SECURITY.md)

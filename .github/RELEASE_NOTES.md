@@ -1,12 +1,9 @@
-MIT-licensed open-source release with security fixes and performance improvements.
+Directory layout maintenance release.
 
-- Clear notification content when registrations expire, access is revoked, or interrupted deliveries become unknown.
-- Validate integrity responses strictly and reuse Google OAuth tokens with bounded expiry.
-- Optimize probe history queries and add regression coverage.
-- Publish amd64/arm64 gateway and backup images with SBOM and build provenance.
+- Organize backend code in `src/`, console files in `public/`, CLI tools in `scripts/`, and detailed guides in `docs/`.
+- Preserve root `.env` and `data/`, Docker volumes, `npm start`, `install.sh`, and public HTTP URLs.
+- Update Docker packaging, test imports, documentation links, and CLI commands for the new paths.
 
-Images: `ghcr.io/ruivza/kookaburrarelay:0.1.1` and `ghcr.io/ruivza/kookaburrarelay-backup:0.1.1`.
+Images: `ghcr.io/ruivza/kookaburrarelay:0.1.2` and `ghcr.io/ruivza/kookaburrarelay-backup:0.1.2`.
 
-Download the gateway and backup Docker archives for your platform and import them with `docker load -i <archive>`. These release assets are publicly downloadable even when GHCR package visibility is private. Verify all downloads against `SHA256SUMS`.
-
-See README for installation and SECURITY.md for deployment requirements. Vendor acceptance does not guarantee device delivery; real-device and cloud backup validation require operator credentials.
+Download both Docker archives for your platform, verify `SHA256SUMS`, and import with `docker load -i <archive>`. See [installation](https://github.com/ruivza/KookaburraRelay#readme) and [operations](https://github.com/ruivza/KookaburraRelay/blob/main/docs/OPERATIONS.md).

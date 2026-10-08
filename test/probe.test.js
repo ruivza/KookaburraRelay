@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { UptimeProbe } from '../uptime-probe.mjs';
+import { UptimeProbe } from '../scripts/uptime-probe.mjs';
 test('external probe spools outages and uploads observations on recovery without fabricated uptime',async()=>{
   const db=new DatabaseSync(':memory:');let online=false,time=Date.now(),uploaded;
   const p=new UptimeProbe({db,origin:'https://gateway.example.test',credential:'m'.repeat(43),now:()=>time,fetcher:async(url,opts)=>{

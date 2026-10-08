@@ -44,7 +44,7 @@ Use `Authorization: Bearer <device delivery credential>` and matching `appId`, `
 {"appId":"notes","deviceId":"device-1","serverId":"server-1","kind":"alert","alert":{"title":"Reminder","body":"Your meeting starts soon","sound":false}}
 ```
 
-Use `/v1/notify` for synchronous provider acceptance or `/v1/jobs` for asynchronous delivery. Jobs additionally require a stable `requestId` of 16–100 letters, digits, underscores, or hyphens. HTTP 202 means queued, while HTTP 200 from `/v1/notify` means accepted by the provider. Neither proves delivery. Query `GET /v1/jobs/:id` with the same credentials; job responses omit content. See [queue semantics](docs/OPERATIONS.md#delivery-queue).
+Use `/v1/notify` for synchronous provider acceptance or `/v1/jobs` for asynchronous delivery. Jobs additionally require a stable `requestId` of 16–100 letters, digits, underscores, or hyphens. HTTP 202 means queued, while HTTP 200 from `/v1/notify` means accepted by the provider. Neither proves delivery. Query `GET /v1/jobs/:id` with the same credentials; job responses omit content. See [queue semantics](OPERATIONS.md#delivery-queue).
 
 Ordinary `alert` requires string title and body, limited to 120 and 400 Unicode code points. They cannot both be blank or contain control characters. `sound` is boolean and defaults to true. The gateway and provider can read ordinary alerts; queued content is encrypted at rest, not end-to-end encrypted.
 
@@ -58,7 +58,7 @@ Send `kind:"encrypted_alert"` with an optional `encryptedNotification` object:
 | --- | --- |
 | `version` | `1` |
 | `keyId` | 64 lowercase hexadecimal characters |
-| `id` | 36-character lowercase hexadecimal/hyphen identifier |
+| `id` | Lowercase hexadecimal string in `8-4-4-4-12` UUID shape |
 | `expires` | Future Unix milliseconds, at most 24 hours ahead |
 | `ephemeralKey` | Canonical Base64, 65-byte uncompressed public-key encoding starting with `0x04` |
 | `ciphertext` | Canonical Base64, 28–2400 bytes: nonce + ciphertext + tag |

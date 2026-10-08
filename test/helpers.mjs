@@ -1,5 +1,5 @@
-import {createGateway as create} from '../server.js';
-import {Database} from '../database.js';
+import {createGateway as create} from '../src/server.js';
+import {Database} from '../src/database.js';
 import {createHash} from 'node:crypto';
 import {after} from 'node:test';
 const schemas=new Set();

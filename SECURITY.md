@@ -20,4 +20,4 @@ Security fixes target the current default branch and its latest release. Older v
 - App Attest, Play Integrity, and server approval are disabled by default. Enable them when compatible integrations have been verified.
 - Provider acceptance is not device delivery. An `unknown` result may already have reached the provider and is not automatically replayed.
 
-See [operations](docs/OPERATIONS.md) and [access policies](ACCESS_SECURITY.md) for configuration and recovery details.
+See [operations](docs/OPERATIONS.md) and [access policies](docs/ACCESS_SECURITY.md) for configuration and recovery details.

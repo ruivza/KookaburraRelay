@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {chartModel,nearestPoint,initializeCharts,renderChart,renderStackedChart} from '../monitor-charts.js';
+import {chartModel,nearestPoint,initializeCharts,renderChart,renderStackedChart} from '../public/monitor-charts.js';
 test('chart scale contains real values, integer counts and zero series',()=>{
  for(const [key,values] of [['rss',[80,113.45]],['latency',[.003,.017]],['requests',[0,1]],['queued',[0,0]]]){
   const m=chartModel(values.map((value,i)=>({time:100000+i*60000,[key]:value})),key);

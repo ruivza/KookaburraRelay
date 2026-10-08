@@ -4,7 +4,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createGateway} from './helpers.mjs';
-import {sendWebhook,webhookURL,alertDefaults} from '../alerts.js';
+import {sendWebhook,webhookURL,alertDefaults} from '../src/alerts.js';
 async function fixture(){
  const dataDir=mkdtempSync(join(tmpdir(),'relay-alerts-'));let now=Date.now(),app,fail=false;const sent=[];
  const options={dataDir,adminToken:'test-admin-'.repeat(5),autoStart:false,now:()=>now,alertSender:async event=>{sent.push(event);if(fail)throw Error('secret internal error');}};

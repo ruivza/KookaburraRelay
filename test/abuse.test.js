@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGateway } from './helpers.mjs';
-import { AbuseProtection } from '../abuse.js';
+import { AbuseProtection } from '../src/abuse.js';
 
 async function fixture() {
   const dataDir = mkdtempSync(join(tmpdir(), 'relay-abuse-'));

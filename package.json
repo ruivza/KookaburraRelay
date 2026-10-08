@@ -14,11 +14,11 @@
     "node": ">=24"
   },
   "scripts": {
-    "start": "node server.js",
+    "start": "node src/server.js",
     "test": "node --test test/*.test.js",
     "check": "node scripts/check.mjs",
     "db:up": "docker compose -p kookaburra-relay up -d --wait",
-    "db:migrate": "node --env-file-if-exists=.env migrate-sqlite.mjs"
+    "db:migrate": "node --env-file-if-exists=.env scripts/migrate-sqlite.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1137.0",
@@ -28,5 +28,5 @@
     "pg": "^8.23.0",
     "qrcode": "^1.5.4"
   },
-  "version": "0.1.1"
+  "version": "0.1.2"
 }

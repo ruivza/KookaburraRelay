@@ -51,10 +51,10 @@ Devices register by confirming a challenge received through APNs / FCM. Business
 
 ## Documentation
 
-- [Notification and registration protocol](NOTIFICATION_PROTOCOL.md)
-- [Application integrity, server approval, quotas, and alerts](ACCESS_SECURITY.md)
+- [Notification and registration protocol](docs/NOTIFICATION_PROTOCOL.md)
+- [Application integrity, server approval, quotas, and alerts](docs/ACCESS_SECURITY.md)
 - [Operations, monitoring, and backup recovery](docs/OPERATIONS.md)
-- [Real-device validation](REAL_DEVICE_TESTING.md)
+- [Real-device validation](docs/REAL_DEVICE_TESTING.md)
 - [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Changelog](CHANGELOG.md)
 - [Release review](docs/REVIEW.md)
 

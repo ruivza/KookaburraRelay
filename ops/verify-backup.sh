@@ -24,7 +24,7 @@ created=true
 docker compose exec -T postgres pg_restore -U kookaburra --exit-on-error --no-owner --no-privileges -d "$restore_db" < "$stage/database.dump"
 docker compose exec -T gateway node --input-type=module -e '
 import {mkdtempSync,readFileSync,writeFileSync,rmSync} from "node:fs";
-import {createGateway} from "/app/server.js";
+import {createGateway} from "/app/src/server.js";
 const dataDir=mkdtempSync("/tmp/relay-restore-");
 const url=new URL(process.env.GATEWAY_DATABASE_URL);url.pathname="/"+process.argv[1];
 let app;

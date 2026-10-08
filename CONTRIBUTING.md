@@ -17,14 +17,16 @@ CI supplies PostgreSQL 18 and `age`. Browser fixtures in `test/` use simulated p
 
 | Files | Responsibility |
 | --- | --- |
-| `server.js`, `*-api.js` | HTTP routes, authentication, lifecycle |
-| `applications.js`, `channel-store.js`, `channels.js`, `apns.js`, `fcm.js` | Application scopes, credentials, vendor adapters |
-| `device-api.js`, `notification.js`, `delivery.js` | Registration proof, payload validation, delivery queue |
-| `access.js`, `integrity.js`, `security.js`, `abuse.js` | Server approval, platform proof, admin security, resource limits |
-| `database.js`, `schema.sql`, `master-key.js` | PostgreSQL transactions, migrations, encryption |
-| `observability.js`, `alerts.js`, `maintenance.js` | Metrics, webhooks, retention |
-| `backups.js`, `backup-worker.js`, `s3-storage.js`, `ops/` | Backup scheduling, encryption, upload, restore verification |
-| `index.html`, `admin.js`, `*-ui.js`, `i18n.js`, `style.css` | Console; no frontend build step |
+| `src/server.js`, `src/*-api.js` | HTTP routes, authentication, lifecycle |
+| `src/applications.js`, `src/channel-store.js`, `src/channels.js`, `src/apns.js`, `src/fcm.js` | Application scopes, credentials, vendor adapters |
+| `src/device-api.js`, `src/notification.js`, `src/delivery.js` | Registration proof, payload validation, delivery queue |
+| `src/access.js`, `src/integrity.js`, `src/security.js`, `src/abuse.js` | Server approval, platform proof, admin security, resource limits |
+| `src/database.js`, `src/schema.sql`, `src/master-key.js` | PostgreSQL transactions, migrations, encryption |
+| `src/observability.js`, `src/alerts.js`, `src/maintenance.js` | Metrics, webhooks, retention |
+| `src/backups.js`, `src/backup-worker.js`, `src/s3-storage.js`, `ops/` | Backup scheduling, encryption, upload, restore verification |
+| `public/index.html`, `public/admin.js`, `public/*-ui.js`, `public/i18n.js`, `public/style.css` | Console; no frontend build step |
+| `scripts/` | Source checks, SQLite migration, independent uptime probe |
+| `docs/` | Protocols, operations, real-device validation, and review records |
 | `test/` | Node test suite and browser fixtures |
 
 ## Review requirements

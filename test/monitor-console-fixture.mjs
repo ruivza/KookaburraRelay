@@ -1,7 +1,7 @@
 // Isolated UI fixture. All B2 operations are mocked; no real credentials or uploads.
-import {createGateway} from '../server.js';
-import {BackupWorker} from '../backup-worker.js';
-import {Database} from '../database.js';
+import {createGateway} from '../src/server.js';
+import {BackupWorker} from '../src/backup-worker.js';
+import {Database} from '../src/database.js';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {writeFile,stat} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';

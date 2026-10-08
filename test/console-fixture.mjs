@@ -2,8 +2,8 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createGateway } from "../server.js";
-import { Database } from "../database.js";
+import { createGateway } from "../src/server.js";
+import { Database } from "../src/database.js";
 import { randomUUID } from "node:crypto";
 const databaseSchema="test_console_"+randomUUID().replaceAll("-","");
 const dir=mkdtempSync(join(tmpdir(),'perch-console-browser-'));

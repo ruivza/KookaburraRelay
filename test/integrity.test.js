@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,generateKeyPairSync,sign} from 'node:crypto';
 import cbor from 'cbor';
-import {verifyApple,validateGoogleVerdict,googleCredential,GoogleIntegrity} from '../integrity.js';
+import {verifyApple,validateGoogleVerdict,googleCredential,GoogleIntegrity} from '../src/integrity.js';
 const sha=b=>createHash('sha256').update(b).digest();
 test('Apple assertions verify real P-256 signatures, app binding and increasing counter',()=>{
  const {publicKey,privateKey}=generateKeyPairSync('ec',{namedCurve:'prime256v1'}),policy={teamId:'0123456789',bundleId:'com.example.mail'},payload='challenge-random';
