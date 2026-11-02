@@ -183,6 +183,39 @@ test('memory admission and logging remain bounded under changing keys and slow w
   slots.forEach(release => { release(); release(); }); assert.equal(abuse.requests, 0);
 });
 
+test('confirmation replays return the grant only for ten minutes, then the stored plaintext grant is erased', async () => {
+  const f = await fixture();
+  const stored = id => f.app.db.prepare('SELECT credentials,challenge_hash,delivery_hash FROM registrations WHERE id=?').get(id);
+  const pending = async n => {
+    const r = await f.call('/v1/registrations', f.input(n)); assert.equal(r.status, 202);
+    return f.sent.find(p => p.perchRegistration?.id === r.body.registrationId).perchRegistration;
+  };
+  try {
+    const proof = await pending(1);
+    const confirm = () => f.call('/v1/registrations/' + proof.id + '/confirm', proof);
+    const first = await confirm(); assert.equal(first.status, 200);
+    f.advance(599000);
+    const retry = await confirm(); assert.equal(retry.status, 200); assert.deepEqual(retry.body, first.body);
+    f.advance(2000);
+    assert.equal((await confirm()).status, 403);
+    let row = await stored(proof.id);
+    assert.equal(row.credentials, null); assert.equal(row.challenge_hash, null); assert.ok(row.delivery_hash);
+    assert.equal((await confirm()).status, 403);
+    assert.equal((await f.call('/v1/validate', scope({ ...first.body, deviceId: proof.deviceId }), first.body.credential)).status, 200);
+    // Grants that are never replayed are erased by periodic cleanup.
+    const quiet = await f.enroll(2);
+    f.advance(600001); await f.app.abuse.cleanup();
+    row = await stored(quiet.registrationId);
+    assert.equal(row.credentials, null); assert.equal(row.challenge_hash, null);
+    // Registrations confirmed before the upgrade have no confirmed_at and no retry window.
+    const legacy = await pending(3);
+    assert.equal((await f.call('/v1/registrations/' + legacy.id + '/confirm', legacy)).status, 200);
+    await f.app.db.prepare('UPDATE registrations SET confirmed_at=NULL WHERE id=?').run(legacy.id);
+    assert.equal((await f.call('/v1/registrations/' + legacy.id + '/confirm', legacy)).status, 403);
+    assert.equal((await stored(legacy.id)).credentials, null);
+  } finally { await f.close(); }
+});
+
 test('unexpected failures log one line with request ID, method, route and error code, never request data', async t => {
   const f = await fixture();
   try {

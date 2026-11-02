@@ -1,4 +1,6 @@
 const DAY = 86400000;
+// A confirmed grant can be fetched again only for idempotent client retries; then its plaintext is erased.
+export const confirmReplay = 600000;
 export const abuseDefaults = Object.freeze({
   registrationEnabled: true,
   registrationGlobalMinute: 300, registrationAppMinute: 120,
@@ -157,6 +159,10 @@ export class AbuseProtection {
       await this.db.prepare('DELETE FROM abuse_events WHERE time<?').run(this.now()-7*DAY);
       await this.db.prepare('DELETE FROM abuse_quotas WHERE expires<=?').run(this.now());
       await this.db.prepare('DELETE FROM limits WHERE start<?').run(this.now() - 3600000);
+      // Erase plaintext grants whose retry window has passed; rows confirmed before confirmed_at existed have none.
+      await this.db.prepare(`UPDATE registrations SET credentials=NULL,challenge_hash=NULL WHERE id IN
+        (SELECT id FROM registrations WHERE challenge_hash IS NOT NULL AND delivery_hash IS NOT NULL
+        AND (confirmed_at IS NULL OR confirmed_at<=?) LIMIT 1000)`).run(this.now() - confirmReplay);
       await this.db.transaction(async () => {
         const expired = await this.db.prepare(`DELETE FROM registrations WHERE id IN
           (SELECT id FROM registrations WHERE expires<=? ORDER BY expires LIMIT 1000)

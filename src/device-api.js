@@ -2,6 +2,7 @@ import { defaultApp, validID } from './applications.js';
 import { requestedKinds } from './notification.js';
 import { channelCatalog } from './channels.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { confirmReplay } from './abuse.js';
 const fail = (status, message) => { throw Object.assign(Error(message), { status }); };
 export async function deviceAPI({ req, path, body, send, applications, db, queue, now, limit, hash, secret, seal, open, bearer, device, abuse, access }) {
       if (path === "/v1/registrations" && req.method === "POST") {
@@ -139,8 +140,12 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
         )
           fail(403, "Invalid device proof");
         req.gatewayScope = { appId: entry.app_id, channel: entry.channel };
-        if (entry.credentials)
-          return JSON.parse(open(entry.credentials));
+        // A confirmed registration is never re-minted; its grant is returned only within the retry window.
+        if (entry.delivery_hash) {
+          if (entry.credentials && entry.confirmed_at > now() - confirmReplay) return JSON.parse(open(entry.credentials));
+          await db.prepare('UPDATE registrations SET credentials=NULL,challenge_hash=NULL WHERE id=?').run(entry.id);
+          return null;
+        }
         const enabled = await applications.capabilities(entry.app_id,entry.channel);
         if ((entry.kinds ?? ['sync']).some(k => !enabled.includes(k))) fail(403, 'Notification capability disabled for application');
         const credentials = {
@@ -158,17 +163,19 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
             "DELETE FROM registrations WHERE token_hash=? AND id<>?",
           ).run(entry.token_hash, entry.id));
           (await db.prepare(
-            "UPDATE registrations SET delivery_hash=?,revoke_hash=?,credentials=?,expires=? WHERE id=?",
+            "UPDATE registrations SET delivery_hash=?,revoke_hash=?,credentials=?,expires=?,confirmed_at=? WHERE id=?",
           ).run(
             hash(credentials.credential),
             hash(credentials.revokeToken),
             seal(JSON.stringify(credentials)),
             credentials.expiresAt,
+            now(),
             entry.id,
           ));
         });
         return credentials;
         });
+        if (!value) fail(403, "Invalid device proof");
         return send(200,value);
       }
       const revoke = path.match(/^\/v1\/registrations\/([A-Za-z0-9_-]+)$/);

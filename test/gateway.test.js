@@ -163,14 +163,16 @@ test("registration lookups by device token and server use indexes", async () => 
   try {
     const plans = await app.db.transaction(async () => {
       await app.db.exec("SET LOCAL enable_seqscan=off");
-      const plan = async (sql) => (await app.db.query("EXPLAIN " + sql, ["x"])).rows.map((r) => r["QUERY PLAN"]).join("\n");
+      const plan = async (sql, value = "x") => (await app.db.query("EXPLAIN " + sql, [value])).rows.map((r) => r["QUERY PLAN"]).join("\n");
       return [
         await plan("SELECT id FROM registrations WHERE token_hash=$1"),
         await plan("SELECT id FROM registrations WHERE server_id=$1"),
+        await plan("SELECT id FROM registrations WHERE challenge_hash IS NOT NULL AND delivery_hash IS NOT NULL AND (confirmed_at IS NULL OR confirmed_at<=$1) LIMIT 1000", 0),
       ];
     });
     assert.match(plans[0], /registration_token/);
     assert.match(plans[1], /registration_server/);
+    assert.match(plans[2], /registration_replayable/);
   } finally {
     await app.close();
     rmSync(dir, { recursive: true, force: true });
