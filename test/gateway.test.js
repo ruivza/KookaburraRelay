@@ -157,6 +157,26 @@ test("device proof, scoped credentials, ownership transfer and revocation", asyn
   }
 });
 
+test("registration lookups by device token and server use indexes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "perch-gateway-index-"));
+  const app = (await createGateway({ dataDir: dir, adminToken: "operator".repeat(8), autoStart: false }));
+  try {
+    const plans = await app.db.transaction(async () => {
+      await app.db.exec("SET LOCAL enable_seqscan=off");
+      const plan = async (sql) => (await app.db.query("EXPLAIN " + sql, ["x"])).rows.map((r) => r["QUERY PLAN"]).join("\n");
+      return [
+        await plan("SELECT id FROM registrations WHERE token_hash=$1"),
+        await plan("SELECT id FROM registrations WHERE server_id=$1"),
+      ];
+    });
+    assert.match(plans[0], /registration_token/);
+    assert.match(plans[1], /registration_server/);
+  } finally {
+    await app.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("configuration encrypts the Apple key and never returns it", async () => {
   const { generateKeyPairSync } = await import("node:crypto");
   const dir = mkdtempSync(join(tmpdir(), "perch-gateway-config-"));
