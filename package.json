@@ -16,7 +16,10 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test test/*.test.js",
+    "test:docker": "sh scripts/test-docker.sh",
     "check": "node scripts/check.mjs",
+    "bench": "node scripts/bench.mjs",
+    "bench:docker": "sh scripts/test-docker.sh node scripts/bench.mjs",
     "db:up": "docker compose -p kookaburra-relay up -d --wait",
     "db:migrate": "node --env-file-if-exists=.env scripts/migrate-sqlite.mjs"
   },
