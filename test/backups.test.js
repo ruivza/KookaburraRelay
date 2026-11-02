@@ -1,10 +1,11 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
-import {writeFile,readFile,stat} from 'node:fs/promises';
+import {writeFile,readFile,stat,mkdir,readdir,utimes} from 'node:fs/promises';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {createHash} from 'node:crypto';
+import {createHash,randomBytes} from 'node:crypto';
+import {fileURLToPath} from 'node:url';
 import {createGateway} from './helpers.mjs';
 import {BackupWorker} from '../src/backup-worker.js';
 import {B2Storage} from '../src/b2-storage.js';
@@ -25,6 +26,21 @@ async function fixture(){
   save:async extra=>b.save({settings,revision:(await b.row()).settings.revision,currentToken:admin,applicationKey:'fixture-secret-application-key',...extra}),
   close:async()=>{await app.close();rmSync(dir,{recursive:true,force:true});}};
 }
+const backupScript=fileURLToPath(new URL('../ops/backup-once.sh',import.meta.url));
+const bundleMembers=['.env','SHA256SUMS','admin.token','database.dump','master.key','metadata','monitor.token'];
+// Runs the real ops/backup-once.sh against fixture files and stand-ins for the
+// PostgreSQL client tools of the backup image.
+async function scriptEnvironment(dir){
+ const data=dir+'/gateway-data',bin=dir+'/bin',config=dir+'/gateway-config.env';
+ await mkdir(data);await mkdir(bin);
+ await writeFile(data+'/master.key',randomBytes(32));
+ await writeFile(data+'/admin.token','rotated-admin-token-marker');await writeFile(data+'/monitor.token','fixture-monitor-token');
+ await writeFile(config,'POSTGRES_PASSWORD=fixture\n');
+ await writeFile(bin+'/pg_dump','#!/bin/sh\nfor arg; do case "$arg" in --file=*) printf "fixture database dump\\n" > "${arg#--file=}";; esac; done\n',{mode:0o755});
+ await writeFile(bin+'/pg_restore','#!/bin/sh\nexit 0\n',{mode:0o755});
+ return {GATEWAY_DATA_DIR:data,GATEWAY_CONFIG_FILE:config,PATH:bin+':'+process.env.PATH};
+}
+const members=async archive=>(await exec('tar',['-tf',archive])).stdout.split('\n').filter(Boolean).sort();
 test('backup credentials require reauthentication, never return plaintext, and reject unsafe targets and stale writes',async()=>{
  const f=await fixture();try{
   await assert.rejects(f.save({currentToken:'wrong'}),e=>e.status===403);
@@ -73,6 +89,45 @@ test('worker preserves local success across remote failure and retries the same 
   assert.equal(row.state,'completed');assert.equal(uploads,2);assert.equal(localCount,1);
   await writeFile(f.dir+'/saved.age',cipher);assert.equal((await exec('age',['-d','-i',f.key,f.dir+'/saved.age'])).stdout,'fixture database backup');
  }finally{await f.close();}
+});
+test('local bundles are encrypted to the backup recipient and uploaded without a second encryption',async()=>{
+ const f=await fixture(),vars=await scriptEnvironment(f.dir),saved={};
+ for(const key of Object.keys(vars)){saved[key]=process.env[key];process.env[key]=vars[key];}
+ try{
+  await f.save();const root=f.dir+'/backups',uploads=[];let encrypts=0;
+  const worker=new BackupWorker({db:f.app.db,backups:f.b,root,now:f.now,script:backupScript,encrypt:async()=>{encrypts++;},
+   storageFactory:()=>({async upload(file,key){uploads.push({file,key,bytes:await readFile(file)});return {bytes:1};},close(){}})});
+  await worker.initialize();const job=await f.b.enqueue();await worker.tick();
+  const row=await f.app.db.prepare('SELECT * FROM backup_jobs WHERE id=?').get(job.id);
+  assert.equal(row.state,'completed');assert.equal(row.remote_status,'completed');
+  assert.match(row.local_file,/^relay-\d{8}T\d{6}Z-[A-Za-z0-9]+\.tar\.age$/);
+  assert.equal(encrypts,0);assert.equal(uploads.length,1);
+  assert.equal(uploads[0].file,root+'/'+row.local_file);assert.equal(uploads[0].key,`relay-test/archives/${job.id}.tar.age`);
+  // The ciphertext stays as the local bundle; no plaintext tar or upload copy is left behind.
+  assert.deepEqual((await readdir(root)).filter(name=>!name.startsWith('.')),[row.local_file]);
+  assert.deepEqual(await readdir(root+'/.uploads'),[]);
+  assert.deepEqual(await readFile(root+'/'+row.local_file),uploads[0].bytes);
+  assert.ok(!uploads[0].bytes.includes(Buffer.from('fixture database dump')));
+  await exec('age',['-d','-i',f.key,'-o',f.dir+'/bundle.tar',root+'/'+row.local_file]);
+  assert.deepEqual(await members(f.dir+'/bundle.tar'),bundleMembers);
+ }finally{
+  for(const [key,value] of Object.entries(saved))if(value===undefined)delete process.env[key];else process.env[key]=value;
+  await f.close();
+ }
+});
+test('without a recipient the backup script warns, keeps a plaintext bundle and prunes both formats',async()=>{
+ const dir=mkdtempSync('/tmp/relay-backup-script-');try{
+  const env={...process.env,...await scriptEnvironment(dir)},root=dir+'/backups',old=new Date(Date.now()-20*86400000);
+  await mkdir(root);
+  for(const name of ['relay-20200101T000000Z-old.tar','relay-20200101T000000Z-old.tar.age','unrelated.tar']){await writeFile(root+'/'+name,'old');await utimes(root+'/'+name,old,old);}
+  await writeFile(root+'/relay-20990101T000000Z-recent.tar.age','recent');
+  const result=await exec('sh',[backupScript],{env:{...env,BACKUP_DIR:root,BACKUP_RETENTION_DAYS:'14'}});
+  assert.match(result.stderr,/not encrypted/);
+  const file=/^Backup completed: (relay-[A-Za-z0-9-]+\.tar)$/m.exec(result.stdout)?.[1];assert.ok(file,result.stdout);
+  assert.deepEqual(await members(root+'/'+file),bundleMembers);
+  assert.deepEqual((await readdir(root)).filter(name=>!name.startsWith('.')).sort(),[file,'relay-20990101T000000Z-recent.tar.age','unrelated.tar'].sort());
+  assert.equal((await stat(root+'/'+file)).mode&0o777,0o600);
+ }finally{rmSync(dir,{recursive:true,force:true});}
 });
 test('disabling remote backup cancels queued uploads while local jobs still run',async()=>{
  const f=await fixture();try{

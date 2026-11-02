@@ -21,13 +21,14 @@ function safeError(error){
   return ['BucketVersioningRequired','VersioningCheckFailed','EncryptionFailed','BackupTooLarge','RemoteObjectConflict','LocalBackupMissing','LocalBackupFailed','RemoteVerificationFailed'].includes(error.message)?error.message:'BackupOperationFailed';
 }
 export class BackupWorker {
-  constructor({db,backups,root='/backups',now=Date.now,storageFactory=(s,k)=>new S3Storage(s,k),encrypt=encryptFile,localBackup}){
+  constructor({db,backups,root='/backups',now=Date.now,storageFactory=(s,k)=>new S3Storage(s,k),encrypt=encryptFile,localBackup,script='/ops/backup-once.sh'}){
     Object.assign(this,{db,backups,root,now,storageFactory,encrypt});
     this.controller=new AbortController();
     this.localBackup=localBackup|| (async settings=>{
+      if(!settings.recipient)console.warn('Local backup bundle is not encrypted; add an age public key in the backup settings');
       try {
-        const result=await exec('sh',['/ops/backup-once.sh'],{env:{...process.env,BACKUP_RETENTION_DAYS:String(settings.retentionDays),BACKUP_DIR:this.root},signal:this.controller.signal,timeout:600000,maxBuffer:65536});
-        const file=result.stdout.match(/Backup completed: (relay-[A-Za-z0-9-]+\.tar)/)?.[1];
+        const result=await exec('sh',[script],{env:{...process.env,BACKUP_RETENTION_DAYS:String(settings.retentionDays),BACKUP_DIR:this.root,BACKUP_AGE_RECIPIENT:settings.recipient||''},signal:this.controller.signal,timeout:600000,maxBuffer:65536});
+        const file=result.stdout.match(/Backup completed: (relay-[A-Za-z0-9-]+\.tar(?:\.age)?)$/m)?.[1];
         if(!file)throw Error();return file;
       }catch{throw Error('LocalBackupFailed');}
     });
@@ -65,12 +66,16 @@ export class BackupWorker {
       const s=row.settings;
       if(job.kind==='backup'&&job.local_status!=='completed'){
         job.local_file=await this.localBackup(s);
-        if(!/^relay-[A-Za-z0-9-]+\.tar$/.test(job.local_file))throw Error('LocalBackupFailed');
+        if(!/^relay-[A-Za-z0-9-]+\.tar(?:\.age)?$/.test(job.local_file))throw Error('LocalBackupFailed');
         await this.db.prepare("UPDATE backup_jobs SET local_file=?,local_status='completed',local_completed=? WHERE id=?").run(job.local_file,this.now(),job.id);
         job.local_status='completed';
       }
       if(job.kind==='test'||s.enabled){
-        if(!await exists(encrypted)){
+        // An encrypted local bundle is uploaded as it is. Connection tests and
+        // plaintext bundles from older releases are encrypted into .uploads.
+        const bundle=job.kind==='backup'&&job.local_file.endsWith('.age')?resolve(this.root,job.local_file):null;
+        if(bundle){if(!await exists(bundle))throw Error('LocalBackupMissing');}
+        else if(!await exists(encrypted)){
           let source;
           if(job.kind==='test'){
             source=resolve(this.root,'.uploads',job.id+'.test');
@@ -89,7 +94,7 @@ export class BackupWorker {
         // job is running; persisted revisions also fence work after a restart.
         if((await this.backups.row()).settings.revision!==job.config_revision)throw Error('ConfigurationChanged');
         storage=this.storageFactory(s,this.backups.open(row.secret));
-        const uploaded=await storage.upload(encrypted,key,this.controller.signal,{versioned,backupId:job.id});
+        const uploaded=await storage.upload(bundle||encrypted,key,this.controller.signal,{versioned,backupId:job.id});
         await this.db.prepare("UPDATE backup_jobs SET state='completed',remote_status='completed',bytes=?,finished=?,remote_version=?,error='' WHERE id=?").run(uploaded.bytes,this.now(),uploaded.versionId||null,job.id);
         await rm(encrypted,{force:true});
       } else await this.db.prepare("UPDATE backup_jobs SET state='completed',finished=?,error='' WHERE id=?").run(this.now(),job.id);

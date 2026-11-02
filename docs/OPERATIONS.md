@@ -99,27 +99,30 @@ Retention settings default to daily cleanup: request logs 14 days, error logs 30
 
 ## Backup and recovery
 
-Compose starts a backup worker that immediately creates a local archive and normally repeats daily, retaining about 14 days. Later schedule changes use the console. Archives contain a consistent PostgreSQL `relay` snapshot, matching `master.key`, initial admin and monitor tokens, `.env`, metadata, and SHA-256 checksums. Protect the directory and every archive: local backups contain unencrypted secrets.
+Compose starts a backup worker that immediately creates a local archive and normally repeats daily, retaining about 14 days. Later schedule changes use the console. Archives contain a consistent PostgreSQL `relay` snapshot, matching `master.key`, initial admin and monitor tokens, `.env`, metadata, and SHA-256 checksums.
 
-Create a local backup without remote upload:
+When the backup settings hold an `age` public key, each local bundle is written as `relay-*.tar.age`, encrypted to that key, and no plaintext archive is kept; remote uploads reuse that file instead of encrypting again. Without a key, bundles stay plaintext `relay-*.tar` files containing unencrypted secrets, and the worker logs a warning for each one. Retention removes both formats. Protect the directory either way.
+
+Create a local backup without remote upload; add `-e BACKUP_AGE_RECIPIENT=age1...` after `run` to encrypt it:
 
 ```sh
 docker compose run --rm --no-deps --entrypoint sh backup /ops/backup-once.sh
 ```
 
-Verify an archive in a disposable database without overwriting the running database:
+Verify an archive in a disposable database without overwriting the running database. Encrypted bundles need `age` on the host and the private identity, which the script uses only to decrypt into a private temporary directory; remove the identity from the gateway host afterwards:
 
 ```sh
 sh ops/verify-backup.sh /absolute/path/relay-backup.tar
+sh ops/verify-backup.sh -i /secure/backup-identity.txt /absolute/path/relay-backup.tar.age
 ```
 
 The script checks archive members and checksums, restores a temporary database, and verifies the master-key binding and application decryption. It requires running PostgreSQL and gateway containers. Actual recovery uses a separate deployment with the matching database, key, and configuration; validate it before directing traffic there. A new key cannot decrypt an old database.
 
-Remote backups are disabled by default. The console supports B2, R2, AWS S3, and compatible HTTPS S3 endpoints using long-lived access keys. Create an `age` key pair offline, store the private identity securely, and give the gateway only its public recipient. Remote archives are `.tar.age`; losing the private identity prevents decryption.
+Remote backups are disabled by default. The console supports B2, R2, AWS S3, and compatible HTTPS S3 endpoints using long-lived access keys. Create an `age` key pair offline, store the private identity securely, and give the gateway only its public recipient. Remote archives are `.tar.age`, byte for byte the encrypted local bundle; losing the private identity prevents decryption.
 
 Use a private bucket and narrowly scoped credentials. Connection tests upload a small encrypted object; they do not prove database backup or recovery. Configure remote object and version retention at the storage provider: the gateway does not delete remote objects. Fixed-filename mode requires enabled bucket versioning and permissions to inspect it and read object versions. Keep prefixes unique per gateway.
 
-Decrypt a downloaded archive on the machine holding the identity, then run the restore verification:
+To keep the identity off the gateway host, decrypt a downloaded archive on the machine holding it, copy the plaintext archive over privately, and verify that:
 
 ```sh
 age --decrypt -i backup-identity.txt -o backup.tar backup.tar.age
