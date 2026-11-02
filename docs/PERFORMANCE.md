@@ -45,7 +45,7 @@ Database round-trip counts are deterministic for a given workload: they varied b
 
 ## Baseline: v0.1.2
 
-Gateway source as on `main` at `faf95b6` (the run reports `faf95b6-dirty` because the bench files were not yet committed; `src/` was unmodified). Recorded 2026-11-03.
+Gateway source as on `main` at `faf95b6` (the run reports `faf95b6-dirty` because the bench files were not yet committed; `src/` was unmodified). Recorded 2026-11-02, 13:59–14:16 UTC.
 
 | Environment | |
 | --- | --- |
