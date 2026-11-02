@@ -1,6 +1,6 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
-import {createGateway} from './helpers.mjs';import {totp,base32} from '../src/security.js';
+import {mkdtempSync,rmSync,readFileSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+import {createGateway} from './helpers.mjs';import {totp,base32,rotatedMarker} from '../src/security.js';
 test('TOTP matches RFC 6238 SHA-1 vectors (six digit truncation)',()=>{const secret=base32(Buffer.from('12345678901234567890'));for(const [time,code]of [[59,'287082'],[1111111109,'081804'],[1111111111,'050471'],[1234567890,'005924'],[2000000000,'279037'],[20000000000,'353130']])assert.equal(totp(secret,time*1000),code);});
 test('two-step setup, replay protection, single-use recovery, rotation and session revocation',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'relay-security-'));let time=Date.now();const token='test-admin-token-'.repeat(3),next='new-admin-token-'.repeat(3);let app=await createGateway({dataDir:dir,adminToken:token,autoStart:false,now:()=>time});
@@ -61,4 +61,28 @@ test('token verification has a global in-flight cap; excess attempts get 503 wit
  assert.equal(app.security.verifying,0);
  assert.equal((await fetch(base+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})})).status,200);
  }finally{if(client){await client.query('ROLLBACK');client.release();}await app.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('bootstrap token file is read only before a token is stored, replaced by a marker after rotation, and a stale configured token warns',async t=>{
+ const dir=mkdtempSync(join(tmpdir(),'relay-bootstrap-')),file=join(dir,'admin.token'),next='rotated-admin-token-'.repeat(3);let app;
+ const start=adminToken=>createGateway({dataDir:dir,adminToken,autoStart:false});
+ const warnings=t.mock.method(console,'warn',()=>{});const stale=()=>warnings.mock.calls.filter(c=>String(c.arguments[0]).includes('GATEWAY_ADMIN_TOKEN')).length;
+ try{
+  app=await start('');const initial=readFileSync(file,'utf8').trim();assert.ok(initial.length>=32);
+  assert.ok((await app.security.login({token:initial})).session);
+  await app.security.changeToken({currentToken:initial,newToken:next});
+  assert.equal(readFileSync(file,'utf8'),rotatedMarker+'\n');
+  await app.close();app=await start('');
+  assert.equal(readFileSync(file,'utf8'),rotatedMarker+'\n');
+  assert.ok((await app.security.login({token:next})).session);await assert.rejects(app.security.login({token:initial}),{status:401});
+  // Once a token is stored the file is never read, even if it no longer holds a usable token.
+  writeFileSync(file,'short');await app.close();app=await start('');
+  assert.ok((await app.security.login({token:next})).session);assert.equal(stale(),0);
+  await app.close();app=await start(initial);assert.equal(stale(),1);
+  assert.ok((await app.security.login({token:next})).session);await assert.rejects(app.security.login({token:initial}),{status:401});
+  await app.close();app=await start(next);assert.equal(stale(),1);
+  // A fresh database with a rotated data directory gets a new bootstrap token instead of failing.
+  writeFileSync(file,rotatedMarker+'\n');await app.db.exec('DELETE FROM admin_security');await app.close();app=await start('');
+  const regenerated=readFileSync(file,'utf8').trim();assert.notEqual(regenerated,rotatedMarker);assert.ok(regenerated.length>=32);
+  assert.ok((await app.security.login({token:regenerated})).session);
+ }finally{await app?.close();rmSync(dir,{recursive:true,force:true});}
 });

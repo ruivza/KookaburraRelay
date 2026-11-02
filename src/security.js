@@ -2,6 +2,9 @@ import QRCode from 'qrcode';
 import { randomBytes, createHash, createHmac, timingSafeEqual, scrypt } from 'node:crypto';
 import { promisify } from 'node:util';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+// Replaces the bootstrap token after a rotation; backups keep copying the file, but it holds no secret.
+export const rotatedMarker='# Kookaburra Relay admin token was changed in the console and is not stored in this file.';
 const derive=promisify(scrypt), digest=s=>createHash('sha256').update(s).digest('hex');
 const fail=(status,message)=>{throw Object.assign(Error(message),{status});};
 const equal=(a,b)=>a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
@@ -12,8 +15,8 @@ export function totp(secret,time=Date.now()){const counter=Buffer.alloc(8);count
 async function tokenHash(value){const salt=randomBytes(16).toString('hex');return salt+':'+(await derive(value,salt,32)).toString('hex');}
 async function verifyToken(value,stored){if(typeof value!=='string'||value.length>512)return false;const [salt,hash]=stored.split(':');return equal((await derive(value,salt,32)).toString('hex'),hash);}
 export class Security {
-  constructor({db,seal,open,now=Date.now}){
-    Object.assign(this,{db,seal,open,now});this.verifying=0;this.attempt=new AsyncLocalStorage();
+  constructor({db,seal,open,now=Date.now,adminPath}){
+    Object.assign(this,{db,seal,open,now,adminPath});this.verifying=0;this.attempt=new AsyncLocalStorage();
     // scrypt runs under the admin row lock while holding a pool connection; cap attempts before taking one.
     for(const method of ['login','reauthenticate','changeToken','setup','confirm','disable']){const perform=this[method].bind(this);this[method]=(...args)=>this.limited(()=>perform(...args));}
   }
@@ -22,7 +25,20 @@ export class Security {
     if(this.verifying>=4)throw Object.assign(Error('Gateway resource limit'),{status:503,reason:'login_concurrency',retryAfter:5});
     this.verifying++;try{return await this.attempt.run(true,work);}finally{this.verifying--;}
   }
-  async initialize(token){await this.db.prepare('INSERT INTO admin_security(id,token_hash) VALUES(1,?) ON CONFLICT DO NOTHING').run(await tokenHash(token));}
+  // The bootstrap file only hands over the first token; it is never read once a token is stored.
+  async initialize(token){
+    const stored=await this.db.prepare('SELECT token_hash FROM admin_security WHERE id=1').get();
+    if(stored){
+      if(token&&!await verifyToken(token,stored.token_hash))console.warn('GATEWAY_ADMIN_TOKEN differs from the stored admin token and is ignored; it is only imported on first start. Sign in with the current token or change it in the console.');
+      return;
+    }
+    if(!token){
+      token=existsSync(this.adminPath)?readFileSync(this.adminPath,'utf8').trim():'';
+      if(!token||token===rotatedMarker){token=randomBytes(32).toString('base64url');writeFileSync(this.adminPath,token,{mode:0o600});}
+      if(token.length<32)throw Error('Gateway admin token must be at least 32 characters');
+    }
+    await this.db.prepare('INSERT INTO admin_security(id,token_hash) VALUES(1,?) ON CONFLICT DO NOTHING').run(await tokenHash(token));
+  }
   async row(){return this.db.prepare('SELECT * FROM admin_security WHERE id=1 FOR UPDATE').get();}
   async factor(row,code){
     code=typeof code==='string'?code.trim():'';
@@ -53,7 +69,10 @@ export class Security {
   async status(){const row=await this.db.prepare('SELECT totp_secret,recovery_hashes FROM admin_security WHERE id=1').get();return {twoFactorEnabled:!!row.totp_secret,recoveryCodesRemaining:row.recovery_hashes.length};}
   async changeToken(body){
     if(typeof body.newToken!=='string'||body.newToken.length<32||body.newToken.length>256||/\s/.test(body.newToken))fail(400,'New token must contain 32–256 characters without spaces');
-    return this.db.transaction(async()=>{const row=await this.row();await this.reauthenticate(row,body);if(await verifyToken(body.newToken,row.token_hash))fail(400,'New token must differ from current token');await this.db.prepare('UPDATE admin_security SET token_hash=?,pending_secret=NULL,pending_until=NULL WHERE id=1').run(await tokenHash(body.newToken));await this.db.exec('DELETE FROM admin_sessions');return {signInAgain:true};});
+    const result=await this.db.transaction(async()=>{const row=await this.row();await this.reauthenticate(row,body);if(await verifyToken(body.newToken,row.token_hash))fail(400,'New token must differ from current token');await this.db.prepare('UPDATE admin_security SET token_hash=?,pending_secret=NULL,pending_until=NULL WHERE id=1').run(await tokenHash(body.newToken));await this.db.exec('DELETE FROM admin_sessions');return {signInAgain:true};});
+    // The rotation is committed; a stale bootstrap token must not stay in the data directory or its backups.
+    try{writeFileSync(this.adminPath,rotatedMarker+'\n',{mode:0o600});}catch{console.error('Admin token file could not be replaced after rotation');}
+    return result;
   }
   async setup(body){return this.db.transaction(async()=>{
     const row=await this.row();if(row.totp_secret)fail(409,'Two-step verification is already enabled');await this.reauthenticate(row,body);
