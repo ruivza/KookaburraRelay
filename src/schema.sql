@@ -70,3 +70,13 @@ CREATE INDEX IF NOT EXISTS delivery_registration_active ON delivery_jobs(registr
 
 -- Dashboard day totals and latest jobs span all applications.
 CREATE INDEX IF NOT EXISTS delivery_created ON delivery_jobs(created DESC);
+
+-- Registration and confirmation replace a device token's rows under the global
+-- enrollment lock; trusted-server revocation removes one server's devices.
+CREATE INDEX IF NOT EXISTS registration_token ON registrations(token_hash);
+CREATE INDEX IF NOT EXISTS registration_server ON registrations(server_id);
+
+-- Confirmed grants are replayable for a short retry window; cleanup scans only rows still holding a challenge.
+ALTER TABLE registrations ADD COLUMN IF NOT EXISTS confirmed_at BIGINT;
+CREATE INDEX IF NOT EXISTS registration_replayable ON registrations(id)
+  WHERE challenge_hash IS NOT NULL AND delivery_hash IS NOT NULL;

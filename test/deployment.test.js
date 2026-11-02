@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,readFileSync,writeFileSync,existsSync,unlinkSync,cpSync,symlinkSync,realpathSync} from 'node:fs';
 import {randomBytes} from 'node:crypto';
 import {createGateway} from './helpers.mjs';
-import {clientAddressResolver,normalizeIP} from '../src/client-address.js';
+import {clientAddressResolver,normalizeIP,rateKey} from '../src/client-address.js';
 
 const req = (remoteAddress, header) => ({socket:{remoteAddress},headers:{'x-forwarded-for':header}});
 test('forwarded IPs require explicit trusted peers, stop at the first untrusted hop, and normalize IPs', () => {
@@ -38,6 +38,31 @@ test('proxy clients have independent login limits and untrusted headers cannot s
   } finally {await app?.close();rmSync(dataDir,{recursive:true,force:true});}
 });
 
+test('rate keys group IPv6 by /64 and keep IPv4 addresses unchanged', () => {
+  assert.equal(rateKey('2001:db8:1:2:aaaa::1'), '2001:db8:1:2::/64');
+  assert.equal(rateKey('2001:0DB8:0001:0002:ffff:ffff:ffff:fffe'), '2001:db8:1:2::/64');
+  assert.equal(rateKey('2001:db8::7'), '2001:db8:0:0::/64');
+  assert.equal(rateKey('::1'), '0:0:0:0::/64');
+  assert.notEqual(rateKey('2001:db8:1:3::1'), rateKey('2001:db8:1:2::1'));
+  assert.equal(rateKey('203.0.113.9'), '203.0.113.9');
+  assert.equal(rateKey('::ffff:192.0.2.3'), '192.0.2.3');
+});
+
+test('addresses in one IPv6 /64 share login and admission budgets', async () => {
+  const dataDir=mkdtempSync('/tmp/relay-ipv6-test-'); let app;
+  try {
+    app=await createGateway({dataDir,adminToken,autoStart:false,trustedProxies:'127.0.0.1'});
+    await new Promise(r=>app.server.listen(0,'127.0.0.1',r));
+    await app.db.prepare('INSERT INTO limits VALUES(?,?,?)').run('login:2001:db8:1:2::/64',Date.now(),19);
+    const call=ip=>fetch('http://127.0.0.1:'+app.server.address().port+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json','X-Forwarded-For':ip},body:JSON.stringify({token:'wrong'})});
+    assert.equal((await call('2001:db8:1:2::a')).status,401);
+    assert.equal((await call('2001:db8:1:2:ffff:1234:5678:9abc')).status,429);
+    assert.equal((await call('2001:db8:1:3::a')).status,401);
+    assert.equal(app.abuse.buckets.get('http:2001:db8:1:2::/64').count,2);
+    assert.equal(app.abuse.buckets.has('http:2001:db8:1:2::a'),false);
+  } finally {await app?.close();rmSync(dataDir,{recursive:true,force:true});}
+});
+
 test('missing and mismatched master keys fail startup without replacing data or leaking an ownership lock', async () => {
   const dataDir=mkdtempSync('/tmp/relay-key-test-');let app;
   const options={dataDir,adminToken,autoStart:false,providerFactory:()=>({send(){},close(){}})};
@@ -63,6 +88,34 @@ test('missing and mismatched master keys fail startup without replacing data or 
     app=await createGateway(options);
     assert.ok(await app.db.prepare('SELECT 1 FROM gateway_key_check').get());
   }finally{await app?.close();rmSync(dataDir,{recursive:true,force:true});}
+});
+
+test('the duplicate APNs key in applications.secret is no longer written and is cleared only after the master key check', async () => {
+  const {Database} = await import('../src/database.js');
+  const dataDir=mkdtempSync('/tmp/relay-duplicate-key-test-');let app;
+  const options={dataDir,adminToken,autoStart:false,providerFactory:()=>({send(){},close(){}})};
+  const duplicate=async()=>(await app.db.prepare("SELECT secret FROM applications WHERE id='perch-mail'").get()).secret;
+  try {
+    app=await createGateway(options);
+    const schema=app.db.schema;
+    await app.applications.update('perch-mail',{name:'Mail',enabled:true,apns:{privateKey:'fixture',keyId:'ABCDEFGHIJ',teamId:'0123456789',topic:'com.example.duplicate',environment:'both'}});
+    assert.equal(await duplicate(),null);
+    // A legacy install without the key sentinel still has its old duplicate authenticated before it is dropped.
+    await app.db.exec('DELETE FROM gateway_key_check');
+    await app.db.prepare("UPDATE applications SET secret=? WHERE id='perch-mail'").run(Buffer.alloc(48).toString('base64'));
+    await app.close();
+    await assert.rejects(createGateway(options),/does not match/);
+    const control=new Database(process.env.GATEWAY_DATABASE_URL,schema);
+    try {await control.exec("UPDATE applications SET secret=(SELECT secret FROM app_channels WHERE app_id='perch-mail' AND kind='apns')");}
+    finally {await control.close();}
+    app=await createGateway(options);
+    assert.equal(await duplicate(),null);
+    assert.ok(await app.db.prepare('SELECT 1 FROM gateway_key_check').get());
+    assert.equal((await app.applications.describe('perch-mail')).apns.hasKey,true);
+    await app.close();
+    unlinkSync(dataDir+'/master.key');
+    await assert.rejects(createGateway(options),/Master key missing/);
+  } finally {await app?.close();rmSync(dataDir,{recursive:true,force:true});}
 });
 
 test('ownership connection termination closes the listener, providers and pool, allowing a clean restart', {timeout:10000}, async () => {

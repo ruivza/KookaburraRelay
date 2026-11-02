@@ -29,7 +29,7 @@ async function fixture() {
     async call(path, body, token = '', ip = '203.0.113.1', method = body ? 'POST' : 'GET') {
       const r = await fetch(base + path, { method, headers: { Authorization: 'Bearer ' + token,
         'Content-Type': 'application/json', 'X-Forwarded-For': ip }, body: body ? JSON.stringify(body) : undefined });
-      return { status: r.status, body: await r.json(), retryAfter: r.headers.get('retry-after') };
+      return { status: r.status, body: await r.json(), retryAfter: r.headers.get('retry-after'), requestId: r.headers.get('x-request-id') };
     },
     input(n = 1) { return { deviceId: 'phone-' + n, serverId: 'server', deviceToken: n.toString(16).padStart(64, 'a'), environment: 'sandbox', nonce: 'n'.repeat(40) }; },
     async enroll(n = 1, kinds) {
@@ -181,6 +181,95 @@ test('memory admission and logging remain bounded under changing keys and slow w
   const slots = Array.from({ length: 64 }, (_, i) => abuse.admit('ip-' + i));
   assert.throws(() => abuse.admit('another'), e => e.reason === 'request_concurrency');
   slots.forEach(release => { release(); release(); }); assert.equal(abuse.requests, 0);
+});
+
+test('confirmation replays return the grant only for ten minutes, then the stored plaintext grant is erased', async () => {
+  const f = await fixture();
+  const stored = id => f.app.db.prepare('SELECT credentials,challenge_hash,delivery_hash FROM registrations WHERE id=?').get(id);
+  const pending = async n => {
+    const r = await f.call('/v1/registrations', f.input(n)); assert.equal(r.status, 202);
+    return f.sent.find(p => p.perchRegistration?.id === r.body.registrationId).perchRegistration;
+  };
+  try {
+    const proof = await pending(1);
+    const confirm = () => f.call('/v1/registrations/' + proof.id + '/confirm', proof);
+    const first = await confirm(); assert.equal(first.status, 200);
+    f.advance(599000);
+    const retry = await confirm(); assert.equal(retry.status, 200); assert.deepEqual(retry.body, first.body);
+    f.advance(2000);
+    assert.equal((await confirm()).status, 403);
+    let row = await stored(proof.id);
+    assert.equal(row.credentials, null); assert.equal(row.challenge_hash, null); assert.ok(row.delivery_hash);
+    assert.equal((await confirm()).status, 403);
+    assert.equal((await f.call('/v1/validate', scope({ ...first.body, deviceId: proof.deviceId }), first.body.credential)).status, 200);
+    // Grants that are never replayed are erased by periodic cleanup.
+    const quiet = await f.enroll(2);
+    f.advance(600001); await f.app.abuse.cleanup();
+    row = await stored(quiet.registrationId);
+    assert.equal(row.credentials, null); assert.equal(row.challenge_hash, null);
+    // Registrations confirmed before the upgrade have no confirmed_at and no retry window.
+    const legacy = await pending(3);
+    assert.equal((await f.call('/v1/registrations/' + legacy.id + '/confirm', legacy)).status, 200);
+    await f.app.db.prepare('UPDATE registrations SET confirmed_at=NULL WHERE id=?').run(legacy.id);
+    assert.equal((await f.call('/v1/registrations/' + legacy.id + '/confirm', legacy)).status, 403);
+    assert.equal((await stored(legacy.id)).credentials, null);
+  } finally { await f.close(); }
+});
+
+test('unexpected failures log one line with request ID, method, route and error code, never request data', async t => {
+  const f = await fixture();
+  try {
+    const errors = t.mock.method(console, 'error', () => {});
+    const failures = () => errors.mock.calls.map(c => c.arguments.join(' ')).filter(line => line.startsWith('Gateway request failed'));
+    const input = f.input();
+    f.sender(async () => { throw Object.assign(Error('provider echoed ' + input.deviceToken), { code: 'ETIMEDOUT' }); });
+    const first = await f.call('/v1/registrations', input);
+    assert.equal(first.status, 500); assert.equal(first.body.error, 'Gateway request failed');
+    f.sender(async () => { throw new TypeError('message with nonce ' + input.nonce); });
+    const second = await f.call('/v1/registrations', f.input(2));
+    assert.equal(second.status, 500);
+    assert.equal((await f.call('/v1/registrations', { ...f.input(3), deviceToken: 'invalid' })).status, 400);
+    assert.deepEqual(failures(), [
+      `Gateway request failed requestId=${first.requestId} method=POST route=/v1/registrations error=ETIMEDOUT`,
+      `Gateway request failed requestId=${second.requestId} method=POST route=/v1/registrations error=TypeError`,
+    ]);
+    const logged = JSON.stringify(errors.mock.calls.map(c => c.arguments));
+    for (const value of [input.deviceToken, input.nonce, 'provider echoed']) assert.ok(!logged.includes(value));
+  } finally { await f.close(); }
+});
+
+test('junk enrollments cannot exhaust rate-limit capacity for administrators and senders', async () => {
+  const f = await fixture();
+  try {
+    const grant = await f.enroll();
+    const unknown = await f.call('/v1/registrations', { ...f.input(2), appId: 'unknown-app' }, '', '203.0.113.7');
+    assert.equal(unknown.status, 404);
+    assert.equal((await f.app.db.prepare("SELECT count(*) n FROM limits WHERE key LIKE '%unknown-app%' OR key LIKE '%203.0.113.7'").get()).n, 0);
+    // Model a flood of caller-chosen device tokens that filled the enrollment share of the table.
+    await f.app.db.query("INSERT INTO limits SELECT 'enroll-token:junk-'||n,$1,1 FROM generate_series(1,20000) n", [f.app.abuse.now()]);
+    const blocked = await f.call('/v1/registrations', f.input(3), '', '203.0.113.8');
+    assert.equal(blocked.status, 503); assert.equal(blocked.body.reason, 'limit_capacity');
+    assert.equal(f.app.abuse.challenges, 0);
+    const login = await f.call('/auth/login', { token: 'test-admin-'.repeat(5) }, '', '198.51.100.20');
+    assert.equal(login.status, 200);
+    assert.equal((await f.call('/admin/apps', undefined, login.body.session, '198.51.100.21')).status, 200);
+    assert.equal((await f.call('/v1/validate', scope(grant), grant.credential, '198.51.100.22')).status, 200);
+  } finally { await f.close(); }
+});
+
+test('a source exhausting its own request budget neither consumes nor blocks the shared global budget', () => {
+  const abuse = new AbuseProtection({ now: () => 0 });
+  let limited = 0;
+  for (let n = 0; n < 6100; n++) {
+    try { abuse.admit('198.51.100.1')(); } catch (error) { assert.equal(error.reason, 'request_source'); limited++; }
+  }
+  assert.equal(limited, 5500); assert.equal(abuse.buckets.get('http:global').count, 600);
+  abuse.admit('198.51.100.2')();
+  let admitted = 601, reason;
+  for (let n = 3; !reason; n++) for (let i = 0; i < 600 && !reason; i++) {
+    try { abuse.admit('198.51.100.' + n)(); admitted++; } catch (error) { reason = error.reason; }
+  }
+  assert.equal(reason, 'request_global'); assert.equal(admitted, 6000); assert.equal(abuse.requests, 0);
 });
 
 test('resource settings require admin auth, validate bounds and persist; malformed input never invokes provider', async () => {

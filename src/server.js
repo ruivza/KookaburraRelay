@@ -3,7 +3,7 @@ import {Alerts} from './alerts.js';
 import {accessAPI} from './access-api.js';
 import {Backups} from './backups.js';
 import { loadEncryption } from './master-key.js';
-import { clientAddressResolver } from './client-address.js';
+import { clientAddressResolver, rateKey } from './client-address.js';
 import {Maintenance} from './maintenance.js';
 // Standalone push gateway and administrator HTTP API.
 import http from "node:http";
@@ -30,6 +30,15 @@ const hash = (value) => createHash("sha256").update(value).digest("hex");
 const secret = () => randomBytes(32).toString("base64url");
 const fail = (status, message) => {
   throw Object.assign(Error(message), { status });
+};
+// Logged routes and error codes never carry identifiers, bodies or messages.
+const routeOf = (path) => {
+  const route = path.replace(/\/registrations\/[^/]+/, '/registrations/:id').replace(/\/apps\/[^/]+/, '/apps/:id').replace(/\/jobs\/[^/]+/, '/jobs/:id').replace(/\/devices\/[^/]+/, '/devices/:id');
+  return /^\/(v1|admin)\/(registrations|notify|validate|status|apps|overview|monitor|logs|jobs|devices|metrics)(\/(:id|confirm|channels|apns|fcm|test))*$/.test(route) ? route : '/unknown';
+};
+const errorCode = (error) => {
+  const code = String(error?.code ?? error?.name ?? 'Error');
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? code : 'Error';
 };
 
 export async function createGateway({
@@ -112,18 +121,14 @@ export async function createGateway({
     if (!lock.rows[0].locked) throw Error('Another gateway is using this database');
     const { seal, open } = await loadEncryption(db, dataDir);
     const adminPath = resolve(dataDir, 'admin.token');
-    if (!adminToken) {
-      if (!existsSync(adminPath)) writeFileSync(adminPath, secret(), { mode: 0o600, flag: 'wx' });
-      adminToken = readFileSync(adminPath, 'utf8').trim();
-    }
-    if (adminToken.length < 32) throw Error('Gateway admin token must be at least 32 characters');
+    if (adminToken && adminToken.length < 32) throw Error('Gateway admin token must be at least 32 characters');
     if (!await db.prepare('SELECT 1 FROM schema_migrations WHERE version=2').get()) {
       await db.transaction(async()=>{
         await db.prepare('INSERT INTO applications VALUES(?,?,1,?,NULL) ON CONFLICT DO NOTHING').run(defaultApp,'Perch Mail',randomUUID());
         await db.exec('INSERT INTO schema_migrations VALUES(2) ON CONFLICT DO NOTHING');
       });
     }
-    const security = new Security({db,seal,open,now});
+    const security = new Security({db,seal,open,now,adminPath});
     await security.initialize(adminToken);
     const backups=new Backups({db,seal,open,security,now});
     await backups.initialize();
@@ -142,9 +147,14 @@ export async function createGateway({
     await db.prepare("UPDATE delivery_jobs SET state='unknown',notification=NULL,reason='Interrupted',updated=? WHERE state='sending' OR (mode='legacy' AND state='queued')").run(now());
     // Repair content retained by cancellation paths in earlier gateway versions.
     await db.exec("UPDATE delivery_jobs SET notification=NULL WHERE notification IS NOT NULL AND state IN ('accepted','failed','unknown','cancelled')");
+    // Earlier versions duplicated the sealed APNs key here; app_channels is the only copy read. The master key
+    // check above has already authenticated it.
+    await db.exec('UPDATE applications SET secret=NULL WHERE secret IS NOT NULL');
     const monitorPath = resolve(dataDir, 'monitor.token');
     if (!existsSync(monitorPath)) writeFileSync(monitorPath, secret(), { mode: 0o600, flag: 'wx' });
     const monitorToken = readFileSync(monitorPath, 'utf8').trim();
+    // Only unauthenticated enrollment keys share a row cap; operator, login and sender keys never fail on capacity.
+    const enrollmentKey = /^(enroll-ip|enroll-token|confirm-ip):/;
     async function limit(key, maximum, window = 3600000) {
       await db.transaction(async () => {
         await db.query('SELECT pg_advisory_xact_lock(72841105)');
@@ -152,7 +162,7 @@ export async function createGateway({
         const previous = await db.prepare('SELECT * FROM limits WHERE key=?').get(key);
         if (previous && previous.start > time-window && previous.count >= maximum)
           abuse.reject('source_or_device', (previous.start + window - time) / 1000);
-        if (!previous && (await db.prepare('SELECT count(*) n FROM limits').get()).n >= 20000)
+        if (!previous && enrollmentKey.test(key) && (await db.prepare("SELECT count(*) n FROM limits WHERE key LIKE 'enroll-%' OR key LIKE 'confirm-ip:%'").get()).n >= 20000)
           abuse.reject('limit_capacity', 60, 503);
         await db.prepare(`INSERT INTO limits VALUES(?,?,1) ON CONFLICT(key) DO UPDATE SET
           count=CASE WHEN limits.start<=? THEN 1 ELSE limits.count+1 END,
@@ -195,10 +205,8 @@ export async function createGateway({
         monitor.request(res.statusCode, duration);
         if (path.startsWith('/v1/') && req.method !== 'GET' || res.statusCode >= 400 && res.statusCode !== 429) {
           await abuse.log(async () => {
-          const route = path.replace(/\/registrations\/[^/]+/, '/registrations/:id').replace(/\/apps\/[^/]+/, '/apps/:id').replace(/\/jobs\/[^/]+/, '/jobs/:id').replace(/\/devices\/[^/]+/, '/devices/:id');
-          const known = /^\/(v1|admin)\/(registrations|notify|validate|status|apps|overview|monitor|logs|jobs|devices|metrics)(\/(:id|confirm|channels|apns|fcm|test))*$/.test(route);
           const logApp = req.gatewayScope?.appId ?? body?.appId ?? (path.startsWith('/v1/') ? defaultApp : '');
-          (await monitor.record({ kind: res.statusCode >= 400 ? 'error' : 'request', action: req.method + ' ' + (known ? route : '/unknown'),
+          (await monitor.record({ kind: res.statusCode >= 400 ? 'error' : 'request', action: req.method + ' ' + routeOf(path),
             appId: validID(logApp) && (await db.prepare('SELECT 1 FROM applications WHERE id=?').get(logApp)) ? logApp : '', channel: req.gatewayScope?.channel || (['apns','fcm'].includes(body?.channel) ? body.channel : ''), status: res.statusCode, duration, requestId }));
           });
         }
@@ -215,8 +223,8 @@ export async function createGateway({
       };
       try {
         if (shutdown || ownershipLost) return send(503, { error: "Gateway shutting down" });
-        req.clientAddress = addressFor(req);
-        release = abuse.admit(req.clientAddress);
+        req.clientAddress = addressFor(req); req.rateKey = rateKey(req.clientAddress);
+        release = abuse.admit(req.rateKey);
         const url = new URL(req.url, "http://localhost");
         path = url.pathname;
         if (req.method === 'GET' && ['/logo.png','/favicon.png'].includes(path)) {
@@ -243,10 +251,10 @@ export async function createGateway({
         }
         if (path.startsWith("/admin/")) {
           await security.authenticate(bearer(req));
-          (await limit("admin:" + req.clientAddress, 600, 60000));
+          (await limit("admin:" + req.rateKey, 600, 60000));
         }
         if (path === '/monitor/report' || path === '/metrics') {
-          (await limit('probe:' + req.clientAddress, 120, 60000));
+          (await limit('probe:' + req.rateKey, 120, 60000));
           if (!timingSafeEqual(Buffer.from(hash(bearer(req))), Buffer.from(hash(monitorToken)))) fail(401, 'Unauthorized');
         }
         if (["POST", "PUT", "DELETE"].includes(req.method)) {
@@ -266,13 +274,13 @@ export async function createGateway({
             fail(400, "Invalid JSON");
         }
         if (path === '/auth/login' && req.method === 'POST') {
-          await limit('login:'+req.clientAddress,20,60000);
+          await limit('login:'+req.rateKey,20,60000);
           return send(200,await security.login(body));
         }
         if (path.startsWith('/admin/security')) {
           if(path === '/admin/security' && req.method==='GET') return send(200,await security.status());
           if(req.method==='POST') {
-            await limit('security:'+req.clientAddress,10,60000);
+            await limit('security:'+req.rateKey,10,60000);
             const actions={'/admin/security/token':'changeToken','/admin/security/setup':'setup','/admin/security/confirm':'confirm','/admin/security/disable':'disable'};
             const action=actions[path];if(action){const result=await security[action](body);await monitor.record({kind:'audit',action:'security.'+action,requestId});return send(200,result);}
           }
@@ -280,7 +288,7 @@ export async function createGateway({
         if(path.startsWith('/admin/backups')) {
         if(path==='/admin/backups'&&req.method==='GET')return send(200,await backups.status());
         if(['PUT','POST'].includes(req.method)) {
-          await limit('backup-admin:'+req.clientAddress,10,60000);
+          await limit('backup-admin:'+req.rateKey,10,60000);
           let result,action;
           if(path==='/admin/backups'&&req.method==='PUT'){result=await backups.save(body);action='backup.settings';}
           if(path==='/admin/backups/run'&&req.method==='POST'){result=await backups.enqueue();action='backup.run';}
@@ -304,7 +312,7 @@ export async function createGateway({
         if (path.startsWith('/admin/') && await accessAPI({path,method:req.method,body,params:url.searchParams,access,abuse,alerts,monitor,send,requestId})) return;
         if (path === '/v1/access' && req.method === 'GET') return send(200, await access.publicPolicy(url.searchParams.get('appId') || defaultApp));
         if (path === '/v1/server-tickets' && req.method === 'POST') return send(200, await access.ticket(bearer(req),body));
-        if (path === '/v1/integrity/challenges' && req.method === 'POST') return send(200, await access.challenge(body,req.clientAddress));
+        if (path === '/v1/integrity/challenges' && req.method === 'POST') return send(200, await access.challenge(body,req.rateKey));
         if (path === "/v1/status" && req.method === "GET") {
           const appId =
             new URL(req.url, "http://localhost").searchParams.get("appId") ||
@@ -329,6 +337,7 @@ export async function createGateway({
         if (path.startsWith('/admin/')) return await adminAPI({ path, method: req.method, body, params: url.searchParams, applications, db, queue, monitor, send, now, requestId });
         return await deviceAPI({ req, path, body, send, applications, db, queue, now, limit, hash, secret, seal, open, bearer, device, abuse, access });
       } catch (error) {
+        if (!error?.status) console.error(`Gateway request failed requestId=${requestId} method=${req.method} route=${routeOf(path)} error=${errorCode(error)}`);
         if (error.retryAfter && !res.headersSent) res.setHeader('Retry-After', String(error.retryAfter));
         send(error.status || 500, {
           error: error.status ? error.message : "Gateway request failed",

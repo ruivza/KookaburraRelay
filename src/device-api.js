@@ -2,6 +2,7 @@ import { defaultApp, validID } from './applications.js';
 import { requestedKinds } from './notification.js';
 import { channelCatalog } from './channels.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { confirmReplay } from './abuse.js';
 const fail = (status, message) => { throw Object.assign(Error(message), { status }); };
 export async function deviceAPI({ req, path, body, send, applications, db, queue, now, limit, hash, secret, seal, open, bearer, device, abuse, access }) {
       if (path === "/v1/registrations" && req.method === "POST") {
@@ -25,10 +26,12 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
           !["sandbox", "production"].includes(body.environment)
         )
           fail(400, "Invalid registration");
+        // Unknown applications must not create rate-limit rows.
+        await applications.row(appId);
         const release = abuse.reserveChallenge();
         let id;
         try {
-        (await limit("enroll-ip:" + appId + ":" + req.clientAddress, 60));
+        (await limit("enroll-ip:" + appId + ":" + req.rateKey, 60));
         const normalizedToken = channel === "apns" ? body.deviceToken.toLowerCase() : body.deviceToken;
         const tokenHash = hash(
           appId +
@@ -40,7 +43,7 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
             normalizedToken,
         );
         (await limit("enroll-token:" + tokenHash, 6));
-        const accessGrant = await access.prepareRegistration(body, req.clientAddress);
+        const accessGrant = await access.prepareRegistration(body, req.rateKey);
         const route = await applications.resolve(appId, channel, body.environment);
         const enabled = await applications.capabilities(appId,channel);
         if (kinds.some(k => !enabled.includes(k))) fail(403, 'Notification capability disabled for application');
@@ -118,7 +121,7 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
         /^\/v1\/registrations\/([A-Za-z0-9_-]+)\/confirm$/,
       );
       if (confirm && req.method === "POST") {
-        (await limit("confirm-ip:" + req.clientAddress, 120));
+        (await limit("confirm-ip:" + req.rateKey, 120));
         const value = await db.transaction(async()=>{
         await db.query('SELECT pg_advisory_xact_lock(72841104)');
         const entry = (await db
@@ -137,8 +140,12 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
         )
           fail(403, "Invalid device proof");
         req.gatewayScope = { appId: entry.app_id, channel: entry.channel };
-        if (entry.credentials)
-          return JSON.parse(open(entry.credentials));
+        // A confirmed registration is never re-minted; its grant is returned only within the retry window.
+        if (entry.delivery_hash) {
+          if (entry.credentials && entry.confirmed_at > now() - confirmReplay) return JSON.parse(open(entry.credentials));
+          await db.prepare('UPDATE registrations SET credentials=NULL,challenge_hash=NULL WHERE id=?').run(entry.id);
+          return null;
+        }
         const enabled = await applications.capabilities(entry.app_id,entry.channel);
         if ((entry.kinds ?? ['sync']).some(k => !enabled.includes(k))) fail(403, 'Notification capability disabled for application');
         const credentials = {
@@ -156,17 +163,19 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
             "DELETE FROM registrations WHERE token_hash=? AND id<>?",
           ).run(entry.token_hash, entry.id));
           (await db.prepare(
-            "UPDATE registrations SET delivery_hash=?,revoke_hash=?,credentials=?,expires=? WHERE id=?",
+            "UPDATE registrations SET delivery_hash=?,revoke_hash=?,credentials=?,expires=?,confirmed_at=? WHERE id=?",
           ).run(
             hash(credentials.credential),
             hash(credentials.revokeToken),
             seal(JSON.stringify(credentials)),
             credentials.expiresAt,
+            now(),
             entry.id,
           ));
         });
         return credentials;
         });
+        if (!value) fail(403, "Invalid device proof");
         return send(200,value);
       }
       const revoke = path.match(/^\/v1\/registrations\/([A-Za-z0-9_-]+)$/);
@@ -186,7 +195,7 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
         ["/v1/notify", "/v1/validate", "/v1/jobs"].includes(path) &&
         req.method === "POST"
       ) {
-        (await limit("send-ip:" + req.clientAddress, 12000));
+        (await limit("send-ip:" + req.rateKey, 12000));
         const entry = (await device(req, body));
         await limit('send-app:' + entry.app_id, 60000);
         await limit('send-device:' + entry.id, 1200);

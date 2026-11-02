@@ -157,6 +157,28 @@ test("device proof, scoped credentials, ownership transfer and revocation", asyn
   }
 });
 
+test("registration lookups by device token and server use indexes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "perch-gateway-index-"));
+  const app = (await createGateway({ dataDir: dir, adminToken: "operator".repeat(8), autoStart: false }));
+  try {
+    const plans = await app.db.transaction(async () => {
+      await app.db.exec("SET LOCAL enable_seqscan=off");
+      const plan = async (sql, value = "x") => (await app.db.query("EXPLAIN " + sql, [value])).rows.map((r) => r["QUERY PLAN"]).join("\n");
+      return [
+        await plan("SELECT id FROM registrations WHERE token_hash=$1"),
+        await plan("SELECT id FROM registrations WHERE server_id=$1"),
+        await plan("SELECT id FROM registrations WHERE challenge_hash IS NOT NULL AND delivery_hash IS NOT NULL AND (confirmed_at IS NULL OR confirmed_at<=$1) LIMIT 1000", 0),
+      ];
+    });
+    assert.match(plans[0], /registration_token/);
+    assert.match(plans[1], /registration_server/);
+    assert.match(plans[2], /registration_replayable/);
+  } finally {
+    await app.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("configuration encrypts the Apple key and never returns it", async () => {
   const { generateKeyPairSync } = await import("node:crypto");
   const dir = mkdtempSync(join(tmpdir(), "perch-gateway-config-"));
@@ -189,9 +211,10 @@ test("configuration encrypts the Apple key and never returns it", async () => {
     });
     assert.equal(response.status, 200);
     const stored = (await app.db
-      .prepare("SELECT secret FROM applications WHERE id='perch-mail'")
-      .get()).secret;
-    assert.ok(!stored.includes("PRIVATE KEY"));
+      .prepare("SELECT a.secret duplicate, c.secret FROM applications a JOIN app_channels c ON c.app_id=a.id AND c.kind='apns' WHERE a.id='perch-mail'")
+      .get());
+    assert.equal(stored.duplicate, null);
+    assert.ok(!stored.secret.includes("PRIVATE KEY"));
     const config = (
       await (await fetch(url.replace("/perch-mail", ""), { headers })).json()
     ).applications[0];
