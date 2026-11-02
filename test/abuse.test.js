@@ -183,6 +183,21 @@ test('memory admission and logging remain bounded under changing keys and slow w
   slots.forEach(release => { release(); release(); }); assert.equal(abuse.requests, 0);
 });
 
+test('a source exhausting its own request budget neither consumes nor blocks the shared global budget', () => {
+  const abuse = new AbuseProtection({ now: () => 0 });
+  let limited = 0;
+  for (let n = 0; n < 6100; n++) {
+    try { abuse.admit('198.51.100.1')(); } catch (error) { assert.equal(error.reason, 'request_source'); limited++; }
+  }
+  assert.equal(limited, 5500); assert.equal(abuse.buckets.get('http:global').count, 600);
+  abuse.admit('198.51.100.2')();
+  let admitted = 601, reason;
+  for (let n = 3; !reason; n++) for (let i = 0; i < 600 && !reason; i++) {
+    try { abuse.admit('198.51.100.' + n)(); admitted++; } catch (error) { reason = error.reason; }
+  }
+  assert.equal(reason, 'request_global'); assert.equal(admitted, 6000); assert.equal(abuse.requests, 0);
+});
+
 test('resource settings require admin auth, validate bounds and persist; malformed input never invokes provider', async () => {
   const f = await fixture();
   try {

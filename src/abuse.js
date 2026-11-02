@@ -98,8 +98,9 @@ export class AbuseProtection {
     bucket.count++; return true;
   }
   admit(address) {
-    if (!this.memory('http:global', 6000)) this.reject('request_global');
+    // Only requests their source may make reach the shared bucket; one flood cannot starve everyone.
     if (!this.memory('http:' + address, 600)) this.reject('request_source');
+    if (!this.memory('http:global', 6000)) this.reject('request_global');
     if (this.requests >= 64) this.reject('request_concurrency', 5, 503);
     this.requests++;
     let released = false;
