@@ -1,7 +1,9 @@
-import {createHash, X509Certificate, createPrivateKey, sign} from 'node:crypto';
+import {createHash, X509Certificate, createPrivateKey} from 'node:crypto';
 import {verifyAttestation, verifyAssertion} from 'node-app-attest';
 import cbor from 'cbor';
+import {GoogleOAuth, boundedFetch} from './google-oauth.js';
 const invalid = () => { throw Object.assign(Error('Invalid application proof'), {status:403}); };
+const unavailable = () => { throw Object.assign(Error('Application verification temporarily unavailable'),{status:503,retryAfter:60}); };
 const bytes = (value, max=20000) => {
   if (typeof value !== 'string' || value.length > max) invalid();
   const result=Buffer.from(value,'base64');
@@ -56,37 +58,12 @@ export function validateGoogleVerdict(verdict,{policy,payload,now=Date.now()}) {
   return true;
 }
 export class GoogleIntegrity {
-  constructor({fetcher=fetch,now=Date.now}={}) { Object.assign(this,{fetcher,now}); }
+  constructor({fetcher=fetch,now=Date.now}={}) { Object.assign(this,{fetcher,now,oauth:new GoogleOAuth({scope:'https://www.googleapis.com/auth/playintegrity',fetcher,now})}); }
   async json(url, options) {
-    try {
-      const response=await this.fetcher(url,{...options,signal:AbortSignal.timeout(10000),redirect:'error'});
-      let size=0; const chunks=[];
-      for await (const chunk of response.body) { size+=chunk.length; if(size>65536)throw Error(); chunks.push(chunk); }
-      if (!response.ok) throw Error();
-      return JSON.parse(Buffer.concat(chunks).toString());
-    } catch { throw Object.assign(Error('Application verification temporarily unavailable'),{status:503,retryAfter:60}); }
+    try { const {response,text}=await boundedFetch(this.fetcher,url,options); if (!response.ok) throw Error(); return JSON.parse(text); } catch { unavailable(); }
   }
-  async accessToken(credential) {
-    const key=createHash('sha256').update(credential.clientEmail).update('\0').update(credential.privateKey).digest('hex');
-    if(this.oauth?.key===key && this.oauth.expires>this.now()+60000)return this.oauth.token;
-    if(this.oauthPending?.key===key)return this.oauthPending.promise;
-    // Keep one cached token; concurrent refreshes for the current credential share a promise.
-    const pending={key};
-    this.oauthPending=pending;
-    pending.promise=(async()=>{
-      const started=this.now(),issued=Math.floor(started/1000),encode=v=>Buffer.from(JSON.stringify(v)).toString('base64url');
-      const unsigned=encode({alg:'RS256',typ:'JWT'})+'.'+encode({iss:credential.clientEmail,scope:'https://www.googleapis.com/auth/playintegrity',aud:'https://oauth2.googleapis.com/token',iat:issued,exp:issued+3600});
-      const assertion=unsigned+'.'+sign('RSA-SHA256',Buffer.from(unsigned),credential.privateKey).toString('base64url');
-      const oauth=await this.json('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion}).toString()});
-      if(typeof oauth?.access_token!=='string'||!oauth.access_token)throw Object.assign(Error('Application verification temporarily unavailable'),{status:503,retryAfter:60});
-      if(this.oauthPending===pending&&Number.isSafeInteger(oauth.expires_in)&&oauth.expires_in>60){
-        this.oauth={key,token:oauth.access_token,expires:started+Math.min(3600,oauth.expires_in)*1000};
-      }
-      return oauth.access_token;
-    })();
-    try{return await pending.promise;}
-    finally{if(this.oauthPending===pending)this.oauthPending=null;}
-  }
+  // Any OAuth failure, a malformed token response included, is a retryable outage.
+  accessToken(credential) { return this.oauth.token(credential).catch(unavailable); }
   async verify({proof,payload,policy,credential}) {
     if (typeof proof.integrityToken!=='string' || proof.integrityToken.length<20 || proof.integrityToken.length>20000) invalid();
     const token=await this.accessToken(credential);
@@ -95,7 +72,7 @@ export class GoogleIntegrity {
       decoded=await this.json(`https://playintegrity.googleapis.com/v1/${policy.packageName}:decodeIntegrityToken`,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({integrity_token:proof.integrityToken})});
     }catch(error){
       // Do not retain a token the remote service rejected; the next request can obtain a fresh one.
-      if(this.oauth?.token===token)this.oauth=null;
+      this.oauth.invalidate(token);
       throw error;
     }
     validateGoogleVerdict(decoded.tokenPayloadExternal,{policy,payload,now:this.now()});

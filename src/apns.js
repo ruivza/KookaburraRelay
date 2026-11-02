@@ -1,5 +1,6 @@
 import { connect } from "node:http2";
-import { createPrivateKey, sign } from "node:crypto";
+import { createPrivateKey } from "node:crypto";
+import { signJWT } from "./jwt.js";
 // HTTP/2 connections and the provider JWT are reused. No device tokens are logged.
 export class APNsProvider {
   constructor(configuration, { connection = connect, now = Date.now } = {}) {
@@ -18,18 +19,13 @@ export class APNsProvider {
     const now = Math.floor(this.now() / 1000);
     if (this.jwt && now >= this.issued && now - this.issued < 50 * 60)
       return this.jwt;
-    const encode = (value) =>
-      Buffer.from(JSON.stringify(value)).toString("base64url");
-    const unsigned =
-      encode({ alg: "ES256", kid: this.configuration.keyId }) +
-      "." +
-      encode({ iss: this.configuration.teamId, iat: now });
-    const signature = sign("sha256", Buffer.from(unsigned), {
-      key: this.key,
-      dsaEncoding: "ieee-p1363",
-    });
+    const jwt = signJWT(
+      { alg: "ES256", kid: this.configuration.keyId },
+      { iss: this.configuration.teamId, iat: now },
+      this.key,
+    );
     this.issued = now;
-    return (this.jwt = unsigned + "." + signature.toString("base64url"));
+    return (this.jwt = jwt);
   }
   async send(
     device,
