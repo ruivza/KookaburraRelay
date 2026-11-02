@@ -19,9 +19,12 @@ trap 'exit 1' HUP INT TERM
 if tar -tvf "$archive" | cut -c1 | tr -d '\n' | tr -d '-' | grep -q .; then echo 'Archive must contain regular files only' >&2; exit 1; fi
 tar -xf "$archive" -C "$stage"
 (cd "$stage" && if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi)
-docker compose exec -T postgres createdb -U kookaburra "$restore_db"
+# Restore as the gateway's own database role so the check below runs with the
+# privileges the gateway really has; only createdb and dropdb need the superuser.
+app_user=$(docker compose exec -T gateway node -p 'decodeURIComponent(new URL(process.env.GATEWAY_DATABASE_URL).username)')
+docker compose exec -T postgres createdb -U kookaburra -O "$app_user" "$restore_db"
 created=true
-docker compose exec -T postgres pg_restore -U kookaburra --exit-on-error --no-owner --no-privileges -d "$restore_db" < "$stage/database.dump"
+docker compose exec -T postgres pg_restore -U kookaburra --role="$app_user" --exit-on-error --no-owner --no-privileges -d "$restore_db" < "$stage/database.dump"
 docker compose exec -T gateway node --input-type=module -e '
 import {mkdtempSync,readFileSync,writeFileSync,rmSync} from "node:fs";
 import {createGateway} from "/app/src/server.js";

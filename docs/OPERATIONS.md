@@ -9,7 +9,7 @@ docker load -i kookaburra-relay-0.1.2-linux-amd64.tar.gz
 docker load -i kookaburra-relay-backup-0.1.2-linux-amd64.tar.gz
 ```
 
-Use `arm64` archives on ARM hosts. For a fresh installation, run `umask 077; cp .env.example .env` and replace `POSTGRES_PASSWORD` with a long random hex password. Set `GATEWAY_IMAGE=kookaburra-relay:0.1.2` and `GATEWAY_BACKUP_IMAGE=kookaburra-relay-backup:0.1.2`, then run `docker compose up -d --no-build --wait`. Keep an existing deployment's `.env` and data volumes.
+Use `arm64` archives on ARM hosts. For a fresh installation, run `umask 077; cp .env.example .env` and replace `POSTGRES_PASSWORD` and `GATEWAY_DB_PASSWORD` with two different long random hex passwords. Set `GATEWAY_IMAGE=kookaburra-relay:0.1.2` and `GATEWAY_BACKUP_IMAGE=kookaburra-relay-backup:0.1.2`, then run `docker compose up -d --no-build --wait`. Keep an existing deployment's `.env` and data volumes.
 
 GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.2` and `ghcr.io/ruivza/kookaburrarelay-backup:0.1.2`. Their package visibility must be public for anonymous pulls; repository visibility does not change it automatically.
 
@@ -23,7 +23,8 @@ GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.2` and `ghcr.io/ruivza/ko
 | `GATEWAY_DATA_DIR` | Master key and initial admin / monitor tokens; defaults to repository-root `data/` |
 | `GATEWAY_ADMIN_TOKEN` | Optional initial administrator token, at least 32 characters |
 | `GATEWAY_TRUSTED_PROXIES` | Comma-separated verified proxy IP addresses / CIDRs |
-| `POSTGRES_PASSWORD` | Required Compose database password |
+| `POSTGRES_PASSWORD` | Required Compose database superuser password |
+| `GATEWAY_DB_USER`, `GATEWAY_DB_PASSWORD` | Compose non-superuser role for the gateway and backup worker; see [database roles](#database-roles) |
 | `GATEWAY_BIND` | Compose host bind address; defaults to `127.0.0.1` |
 | `GATEWAY_IMAGE`, `GATEWAY_BACKUP_IMAGE` | Optional prebuilt images used by `install.sh` |
 | `GATEWAY_BACKUP_DIR` | Compose local backup directory; defaults to `./backups` |
@@ -38,6 +39,22 @@ The console, `/auth/login`, `/admin/*`, `/v1/*`, health, and monitoring share po
 Client IP defaults to the socket address. Trusted proxies enable right-to-left parsing of `X-Forwarded-For`, stopping at the first untrusted address. Configure the addresses the gateway actually sees; do not trust arbitrary origins or an entire private network.
 
 One gateway owns each PostgreSQL schema through an advisory lock. A second instance refuses to start. Ownership loss shuts down the gateway and exits with an error; a process manager may restart it. Graceful shutdown stops scheduling and waits for active work, with a deadline. Horizontal scaling within a schema is not supported.
+
+## Database roles
+
+Compose creates the PostgreSQL superuser `kookaburra` for administration only: database initialization, `ops/verify-backup.sh` and manual maintenance. The gateway and backup worker connect as `GATEWAY_DB_USER` (`relay_app` by default), an ordinary login role that owns schema `relay` and every object in it. It also holds `CREATE` on the database, because the gateway runs `CREATE SCHEMA IF NOT EXISTS` at every startup. It cannot create roles or databases, read server files, or run server programs such as `COPY ... PROGRAM`.
+
+New installations: `install.sh` writes `GATEWAY_DB_USER` and a separate random `GATEWAY_DB_PASSWORD` to `.env`, and `ops/postgres-init/` creates the role when the database volume is first initialized. Init scripts never run against an existing volume. `GATEWAY_DB_PASSWORD` must differ from `POSTGRES_PASSWORD` and use only letters, digits and `._~-`, because it is part of the connection URL.
+
+Existing installations: an `.env` without `GATEWAY_DB_USER` keeps connecting as the superuser, exactly as before. Do not add the two settings by hand, because the role would not exist. Take a backup, then run from the installation directory while the stack is up:
+
+```sh
+sh ops/create-app-role.sh
+```
+
+The script stops the gateway and backup worker and creates or updates the role with a random password. In one transaction, it transfers ownership of schema `relay` and its tables, sequences, views, functions and types; objects outside the schema keep their owners. It then appends both settings to `.env` and runs `docker compose up -d --wait`, which also recreates the PostgreSQL container once. If the database step fails, it restarts the previous containers unchanged. Running it again is safe, for example after restoring a dump as the superuser, which leaves superuser-owned objects behind.
+
+To roll back, delete the two lines from `.env` and run `docker compose up -d --wait`: the superuser can still use every object, and the transferred ownership can stay.
 
 ## Console
 

@@ -18,7 +18,7 @@ Requires Docker Engine and Docker Compose.
 ./install.sh
 ```
 
-The installer generates a random PostgreSQL password when `.env` is absent and starts the gateway, database, and backup worker. For an existing `.env`, set `POSTGRES_PASSWORD`; see [.env.example](.env.example).
+When `.env` is absent, the installer generates random passwords for the PostgreSQL superuser and for the separate non-superuser role used by the gateway and backup worker, then starts the gateway, database, and backup worker. For an existing `.env`, set `POSTGRES_PASSWORD`; see [.env.example](.env.example). Installations whose `.env` has no `GATEWAY_DB_USER` keep using the superuser until [migrated](docs/OPERATIONS.md#database-roles).
 
 Open [http://127.0.0.1:3220](http://127.0.0.1:3220) and read the initial admin token locally:
 
@@ -41,7 +41,7 @@ export GATEWAY_DATABASE_SCHEMA=relay
 npm start
 ```
 
-Use a dedicated database and account. The service initializes its schema on startup and listens on `127.0.0.1:3220` by default. See [configuration and operations](docs/OPERATIONS.md).
+Use a dedicated database and a non-superuser account that owns the schema and holds `CREATE` on the database. The service initializes its schema on startup and listens on `127.0.0.1:3220` by default. See [configuration and operations](docs/OPERATIONS.md).
 
 ## Deployment
 

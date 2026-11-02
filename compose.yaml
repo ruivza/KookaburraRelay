@@ -1,4 +1,7 @@
 name: kookaburra-relay
+# The gateway and backup worker use a non-superuser role that owns schema relay.
+# A .env without GATEWAY_DB_USER keeps the superuser until ops/create-app-role.sh runs.
+x-database-url: &database-url postgresql://${GATEWAY_DB_USER:-kookaburra}:${GATEWAY_DB_PASSWORD:-${POSTGRES_PASSWORD:?Run install.sh first}}@postgres:5432/kookaburra
 services:
   gateway:
     image: ${GATEWAY_IMAGE:-kookaburra-relay:local}
@@ -15,7 +18,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      GATEWAY_DATABASE_URL: postgresql://kookaburra:${POSTGRES_PASSWORD:?Run install.sh first}@postgres:5432/kookaburra
+      GATEWAY_DATABASE_URL: *database-url
       GATEWAY_DATABASE_SCHEMA: relay
       GATEWAY_TRUSTED_PROXIES: ${GATEWAY_TRUSTED_PROXIES:-}
       GATEWAY_BACKUP_INTERVAL_SECONDS: ${GATEWAY_BACKUP_INTERVAL_SECONDS:-86400}
@@ -43,8 +46,12 @@ services:
       POSTGRES_USER: kookaburra
       POSTGRES_DB: kookaburra
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run install.sh first}
+      # Read only by ops/postgres-init when the database volume is first created.
+      RELAY_APP_USER: ${GATEWAY_DB_USER:-kookaburra}
+      RELAY_APP_PASSWORD: ${GATEWAY_DB_PASSWORD:-}
     volumes:
       - kookaburra-postgres:/var/lib/postgresql
+      - ./ops/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kookaburra -d kookaburra"]
       interval: 5s
@@ -63,13 +70,13 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      GATEWAY_DATABASE_URL: postgresql://kookaburra:${POSTGRES_PASSWORD:?Run install.sh first}@postgres:5432/kookaburra
+      GATEWAY_DATABASE_URL: *database-url
       GATEWAY_DATABASE_SCHEMA: relay
       GATEWAY_DATA_DIR: /gateway-data
       PGHOST: postgres
       PGDATABASE: kookaburra
-      PGUSER: kookaburra
-      PGPASSWORD: ${POSTGRES_PASSWORD:?Run install.sh first}
+      PGUSER: ${GATEWAY_DB_USER:-kookaburra}
+      PGPASSWORD: ${GATEWAY_DB_PASSWORD:-${POSTGRES_PASSWORD:?Run install.sh first}}
     volumes:
       - kookaburra-data:/gateway-data:ro
       - ./.env:/gateway-config.env:ro
