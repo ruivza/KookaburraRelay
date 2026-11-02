@@ -31,6 +31,15 @@ const secret = () => randomBytes(32).toString("base64url");
 const fail = (status, message) => {
   throw Object.assign(Error(message), { status });
 };
+// Logged routes and error codes never carry identifiers, bodies or messages.
+const routeOf = (path) => {
+  const route = path.replace(/\/registrations\/[^/]+/, '/registrations/:id').replace(/\/apps\/[^/]+/, '/apps/:id').replace(/\/jobs\/[^/]+/, '/jobs/:id').replace(/\/devices\/[^/]+/, '/devices/:id');
+  return /^\/(v1|admin)\/(registrations|notify|validate|status|apps|overview|monitor|logs|jobs|devices|metrics)(\/(:id|confirm|channels|apns|fcm|test))*$/.test(route) ? route : '/unknown';
+};
+const errorCode = (error) => {
+  const code = String(error?.code ?? error?.name ?? 'Error');
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? code : 'Error';
+};
 
 export async function createGateway({
   databaseUrl = process.env.GATEWAY_DATABASE_URL,
@@ -197,10 +206,8 @@ export async function createGateway({
         monitor.request(res.statusCode, duration);
         if (path.startsWith('/v1/') && req.method !== 'GET' || res.statusCode >= 400 && res.statusCode !== 429) {
           await abuse.log(async () => {
-          const route = path.replace(/\/registrations\/[^/]+/, '/registrations/:id').replace(/\/apps\/[^/]+/, '/apps/:id').replace(/\/jobs\/[^/]+/, '/jobs/:id').replace(/\/devices\/[^/]+/, '/devices/:id');
-          const known = /^\/(v1|admin)\/(registrations|notify|validate|status|apps|overview|monitor|logs|jobs|devices|metrics)(\/(:id|confirm|channels|apns|fcm|test))*$/.test(route);
           const logApp = req.gatewayScope?.appId ?? body?.appId ?? (path.startsWith('/v1/') ? defaultApp : '');
-          (await monitor.record({ kind: res.statusCode >= 400 ? 'error' : 'request', action: req.method + ' ' + (known ? route : '/unknown'),
+          (await monitor.record({ kind: res.statusCode >= 400 ? 'error' : 'request', action: req.method + ' ' + routeOf(path),
             appId: validID(logApp) && (await db.prepare('SELECT 1 FROM applications WHERE id=?').get(logApp)) ? logApp : '', channel: req.gatewayScope?.channel || (['apns','fcm'].includes(body?.channel) ? body.channel : ''), status: res.statusCode, duration, requestId }));
           });
         }
@@ -331,6 +338,7 @@ export async function createGateway({
         if (path.startsWith('/admin/')) return await adminAPI({ path, method: req.method, body, params: url.searchParams, applications, db, queue, monitor, send, now, requestId });
         return await deviceAPI({ req, path, body, send, applications, db, queue, now, limit, hash, secret, seal, open, bearer, device, abuse, access });
       } catch (error) {
+        if (!error?.status) console.error(`Gateway request failed requestId=${requestId} method=${req.method} route=${routeOf(path)} error=${errorCode(error)}`);
         if (error.retryAfter && !res.headersSent) res.setHeader('Retry-After', String(error.retryAfter));
         send(error.status || 500, {
           error: error.status ? error.message : "Gateway request failed",

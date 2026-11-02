@@ -29,7 +29,7 @@ async function fixture() {
     async call(path, body, token = '', ip = '203.0.113.1', method = body ? 'POST' : 'GET') {
       const r = await fetch(base + path, { method, headers: { Authorization: 'Bearer ' + token,
         'Content-Type': 'application/json', 'X-Forwarded-For': ip }, body: body ? JSON.stringify(body) : undefined });
-      return { status: r.status, body: await r.json(), retryAfter: r.headers.get('retry-after') };
+      return { status: r.status, body: await r.json(), retryAfter: r.headers.get('retry-after'), requestId: r.headers.get('x-request-id') };
     },
     input(n = 1) { return { deviceId: 'phone-' + n, serverId: 'server', deviceToken: n.toString(16).padStart(64, 'a'), environment: 'sandbox', nonce: 'n'.repeat(40) }; },
     async enroll(n = 1, kinds) {
@@ -181,6 +181,28 @@ test('memory admission and logging remain bounded under changing keys and slow w
   const slots = Array.from({ length: 64 }, (_, i) => abuse.admit('ip-' + i));
   assert.throws(() => abuse.admit('another'), e => e.reason === 'request_concurrency');
   slots.forEach(release => { release(); release(); }); assert.equal(abuse.requests, 0);
+});
+
+test('unexpected failures log one line with request ID, method, route and error code, never request data', async t => {
+  const f = await fixture();
+  try {
+    const errors = t.mock.method(console, 'error', () => {});
+    const failures = () => errors.mock.calls.map(c => c.arguments.join(' ')).filter(line => line.startsWith('Gateway request failed'));
+    const input = f.input();
+    f.sender(async () => { throw Object.assign(Error('provider echoed ' + input.deviceToken), { code: 'ETIMEDOUT' }); });
+    const first = await f.call('/v1/registrations', input);
+    assert.equal(first.status, 500); assert.equal(first.body.error, 'Gateway request failed');
+    f.sender(async () => { throw new TypeError('message with nonce ' + input.nonce); });
+    const second = await f.call('/v1/registrations', f.input(2));
+    assert.equal(second.status, 500);
+    assert.equal((await f.call('/v1/registrations', { ...f.input(3), deviceToken: 'invalid' })).status, 400);
+    assert.deepEqual(failures(), [
+      `Gateway request failed requestId=${first.requestId} method=POST route=/v1/registrations error=ETIMEDOUT`,
+      `Gateway request failed requestId=${second.requestId} method=POST route=/v1/registrations error=TypeError`,
+    ]);
+    const logged = JSON.stringify(errors.mock.calls.map(c => c.arguments));
+    for (const value of [input.deviceToken, input.nonce, 'provider echoed']) assert.ok(!logged.includes(value));
+  } finally { await f.close(); }
 });
 
 test('junk enrollments cannot exhaust rate-limit capacity for administrators and senders', async () => {
