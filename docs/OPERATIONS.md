@@ -29,6 +29,7 @@ GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.2` and `ghcr.io/ruivza/ko
 | `GATEWAY_IMAGE`, `GATEWAY_BACKUP_IMAGE` | Optional prebuilt images used by `install.sh` |
 | `GATEWAY_BACKUP_DIR` | Compose local backup directory; defaults to `./backups` |
 | `GATEWAY_BACKUP_INTERVAL_SECONDS`, `GATEWAY_BACKUP_RETENTION_DAYS` | Initial backup schedule; later changes use the console |
+| `GATEWAY_MEM_LIMIT`, `POSTGRES_MEM_LIMIT`, `BACKUP_MEM_LIMIT` | Compose container memory limits; default `512m`, `1g` and `512m`. Process limits are fixed at 256, 256 and 128 |
 
 Administrator tokens and backup defaults are imported only during their first database initialization. Later environment changes do not replace stored settings. Rotating the admin token invalidates sessions but does not update `admin.token`.
 
@@ -102,6 +103,8 @@ Retention settings default to daily cleanup: request logs 14 days, error logs 30
 Compose starts a backup worker that immediately creates a local archive and normally repeats daily, retaining about 14 days. Later schedule changes use the console. Archives contain a consistent PostgreSQL `relay` snapshot, matching `master.key`, initial admin and monitor tokens, `.env`, metadata, and SHA-256 checksums.
 
 When the backup settings hold an `age` public key, each local bundle is written as `relay-*.tar.age`, encrypted to that key, and no plaintext archive is kept; remote uploads reuse that file instead of encrypting again. Without a key, bundles stay plaintext `relay-*.tar` files containing unencrypted secrets, and the worker logs a warning for each one. Retention removes both formats. Protect the directory either way.
+
+The backup container runs as root with every capability dropped except `DAC_OVERRIDE`, on a read-only root filesystem with the data volume, `.env` and `ops/` mounted read-only. A non-root user does not work for existing installations. The container must read the gateway's data files (uid 1000, mode 0600) and the host's private `.env`, owned by whoever ran `install.sh`. It must also write `./backups`, which Docker creates as root and where earlier releases left root-owned bundles in a mode 0700 directory. No single unprivileged uid satisfies all three without a one-time ownership change on the host.
 
 Create a local backup without remote upload; add `-e BACKUP_AGE_RECIPIENT=age1...` after `run` to encrypt it:
 

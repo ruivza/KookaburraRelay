@@ -14,6 +14,8 @@ services:
         max-file: "5"
     init: true
     stop_grace_period: 45s
+    mem_limit: ${GATEWAY_MEM_LIMIT:-512m}
+    pids_limit: 256
     depends_on:
       postgres:
         condition: service_healthy
@@ -37,6 +39,9 @@ services:
   postgres:
     image: postgres:18-alpine
     restart: unless-stopped
+    # PostgreSQL forks a process per connection; the two pools open about 20.
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
+    pids_limit: 256
     logging:
       driver: local
       options:
@@ -64,6 +69,8 @@ services:
       dockerfile: Dockerfile.backup
     restart: unless-stopped
     init: true
+    mem_limit: ${BACKUP_MEM_LIMIT:-512m}
+    pids_limit: 128
     depends_on:
       gateway:
         condition: service_healthy
@@ -85,6 +92,10 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    # Root with only DAC_OVERRIDE: it reads the gateway's uid 1000 mode 0600 data
+    # files and the host's private .env, and writes ./backups, which Docker and
+    # earlier releases created as root. A fixed non-root uid cannot do all three
+    # on existing installations; see docs/OPERATIONS.md.
     cap_drop: [ALL]
     cap_add: [DAC_OVERRIDE]
     security_opt: ["no-new-privileges:true"]
