@@ -44,3 +44,21 @@ test('login HTTP endpoint never grants a session for only a token when 2FA is en
  for(let i=0;i<21;i++){const res=await post('/auth/login',{token:'wrong'});if(i===20)assert.equal(res.status,429);}
  }finally{await app.close();rmSync(dir,{recursive:true,force:true});}
 });
+test('token verification has a global in-flight cap; excess attempts get 503 with Retry-After before touching the database',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'relay-auth-cap-')),token='capped-token'.repeat(4);const app=await createGateway({dataDir:dir,adminToken:token,autoStart:false});let client;
+ try{await new Promise(r=>app.server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+app.server.address().port;
+ // Hold the admin row so verifications queue behind it, as they would behind slow scrypt work.
+ client=await app.db.pool.connect();await client.query('BEGIN');await client.query('SELECT 1 FROM admin_security WHERE id=1 FOR UPDATE');
+ const held=Array.from({length:4},()=>app.security.login({token}));
+ assert.equal(app.security.verifying,4);
+ await assert.rejects(app.security.login({token}),{status:503,reason:'login_concurrency'});
+ await assert.rejects(app.security.changeToken({currentToken:token,newToken:'next-capped-token'.repeat(3)}),{status:503});
+ await assert.rejects(app.security.reauthenticate({token_hash:'00:00'},{currentToken:token}),{status:503});
+ const res=await fetch(base+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
+ assert.equal(res.status,503);assert.equal(res.headers.get('retry-after'),'5');assert.equal((await res.json()).reason,'login_concurrency');
+ await client.query('ROLLBACK');client.release();client=null;
+ for(const result of await Promise.all(held))assert.ok(result.session);
+ assert.equal(app.security.verifying,0);
+ assert.equal((await fetch(base+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})})).status,200);
+ }finally{if(client){await client.query('ROLLBACK');client.release();}await app.close();rmSync(dir,{recursive:true,force:true});}
+});
