@@ -48,7 +48,6 @@ export class ChannelStore {
   async save(id, kind, prepared) {
     const encrypted = this.seal(JSON.stringify(prepared.config));
     (await this.db.prepare('INSERT INTO app_channels VALUES(?,?,?,?) ON CONFLICT(app_id,kind) DO UPDATE SET enabled=excluded.enabled,secret=excluded.secret').run(id, kind, +prepared.enabled, encrypted));
-    if (kind === 'apns') (await this.db.prepare('UPDATE applications SET secret=? WHERE id=?').run(encrypted, id));
   }
   async resolve(id, kind, environment) {
     if (!channelCatalog.find(c => c.id === kind)?.implemented) fail(501, 'Push channel not implemented');

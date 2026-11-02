@@ -151,6 +151,9 @@ export async function createGateway({
     await db.prepare("UPDATE delivery_jobs SET state='unknown',notification=NULL,reason='Interrupted',updated=? WHERE state='sending' OR (mode='legacy' AND state='queued')").run(now());
     // Repair content retained by cancellation paths in earlier gateway versions.
     await db.exec("UPDATE delivery_jobs SET notification=NULL WHERE notification IS NOT NULL AND state IN ('accepted','failed','unknown','cancelled')");
+    // Earlier versions duplicated the sealed APNs key here; app_channels is the only copy read. The master key
+    // check above has already authenticated it.
+    await db.exec('UPDATE applications SET secret=NULL WHERE secret IS NOT NULL');
     const monitorPath = resolve(dataDir, 'monitor.token');
     if (!existsSync(monitorPath)) writeFileSync(monitorPath, secret(), { mode: 0o600, flag: 'wx' });
     const monitorToken = readFileSync(monitorPath, 'utf8').trim();

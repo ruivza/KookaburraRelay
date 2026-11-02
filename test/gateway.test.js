@@ -211,9 +211,10 @@ test("configuration encrypts the Apple key and never returns it", async () => {
     });
     assert.equal(response.status, 200);
     const stored = (await app.db
-      .prepare("SELECT secret FROM applications WHERE id='perch-mail'")
-      .get()).secret;
-    assert.ok(!stored.includes("PRIVATE KEY"));
+      .prepare("SELECT a.secret duplicate, c.secret FROM applications a JOIN app_channels c ON c.app_id=a.id AND c.kind='apns' WHERE a.id='perch-mail'")
+      .get());
+    assert.equal(stored.duplicate, null);
+    assert.ok(!stored.secret.includes("PRIVATE KEY"));
     const config = (
       await (await fetch(url.replace("/perch-mail", ""), { headers })).json()
     ).applications[0];

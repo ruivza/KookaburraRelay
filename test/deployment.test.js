@@ -90,6 +90,34 @@ test('missing and mismatched master keys fail startup without replacing data or 
   }finally{await app?.close();rmSync(dataDir,{recursive:true,force:true});}
 });
 
+test('the duplicate APNs key in applications.secret is no longer written and is cleared only after the master key check', async () => {
+  const {Database} = await import('../src/database.js');
+  const dataDir=mkdtempSync('/tmp/relay-duplicate-key-test-');let app;
+  const options={dataDir,adminToken,autoStart:false,providerFactory:()=>({send(){},close(){}})};
+  const duplicate=async()=>(await app.db.prepare("SELECT secret FROM applications WHERE id='perch-mail'").get()).secret;
+  try {
+    app=await createGateway(options);
+    const schema=app.db.schema;
+    await app.applications.update('perch-mail',{name:'Mail',enabled:true,apns:{privateKey:'fixture',keyId:'ABCDEFGHIJ',teamId:'0123456789',topic:'com.example.duplicate',environment:'both'}});
+    assert.equal(await duplicate(),null);
+    // A legacy install without the key sentinel still has its old duplicate authenticated before it is dropped.
+    await app.db.exec('DELETE FROM gateway_key_check');
+    await app.db.prepare("UPDATE applications SET secret=? WHERE id='perch-mail'").run(Buffer.alloc(48).toString('base64'));
+    await app.close();
+    await assert.rejects(createGateway(options),/does not match/);
+    const control=new Database(process.env.GATEWAY_DATABASE_URL,schema);
+    try {await control.exec("UPDATE applications SET secret=(SELECT secret FROM app_channels WHERE app_id='perch-mail' AND kind='apns')");}
+    finally {await control.close();}
+    app=await createGateway(options);
+    assert.equal(await duplicate(),null);
+    assert.ok(await app.db.prepare('SELECT 1 FROM gateway_key_check').get());
+    assert.equal((await app.applications.describe('perch-mail')).apns.hasKey,true);
+    await app.close();
+    unlinkSync(dataDir+'/master.key');
+    await assert.rejects(createGateway(options),/Master key missing/);
+  } finally {await app?.close();rmSync(dataDir,{recursive:true,force:true});}
+});
+
 test('ownership connection termination closes the listener, providers and pool, allowing a clean restart', {timeout:10000}, async () => {
   const dataDir=mkdtempSync('/tmp/relay-fault-test-');let app, notified, providerClosed=0;
   const fatal=new Promise(resolve=>notified=resolve);
