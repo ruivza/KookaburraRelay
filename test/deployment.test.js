@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,readFileSync,writeFileSync,existsSync,unlinkSync,cpSync,symlinkSync,realpathSync} from 'node:fs';
 import {randomBytes} from 'node:crypto';
 import {createGateway} from './helpers.mjs';
-import {clientAddressResolver,normalizeIP} from '../src/client-address.js';
+import {clientAddressResolver,normalizeIP,rateKey} from '../src/client-address.js';
 
 const req = (remoteAddress, header) => ({socket:{remoteAddress},headers:{'x-forwarded-for':header}});
 test('forwarded IPs require explicit trusted peers, stop at the first untrusted hop, and normalize IPs', () => {
@@ -35,6 +35,31 @@ test('proxy clients have independent login limits and untrusted headers cannot s
     await new Promise(r=>app.server.listen(0,'127.0.0.1',r));
     assert.equal((await call('203.0.113.1')).status,401);
     assert.equal((await app.db.prepare('SELECT count FROM limits WHERE key=?').get('login:127.0.0.1')).count,1);
+  } finally {await app?.close();rmSync(dataDir,{recursive:true,force:true});}
+});
+
+test('rate keys group IPv6 by /64 and keep IPv4 addresses unchanged', () => {
+  assert.equal(rateKey('2001:db8:1:2:aaaa::1'), '2001:db8:1:2::/64');
+  assert.equal(rateKey('2001:0DB8:0001:0002:ffff:ffff:ffff:fffe'), '2001:db8:1:2::/64');
+  assert.equal(rateKey('2001:db8::7'), '2001:db8:0:0::/64');
+  assert.equal(rateKey('::1'), '0:0:0:0::/64');
+  assert.notEqual(rateKey('2001:db8:1:3::1'), rateKey('2001:db8:1:2::1'));
+  assert.equal(rateKey('203.0.113.9'), '203.0.113.9');
+  assert.equal(rateKey('::ffff:192.0.2.3'), '192.0.2.3');
+});
+
+test('addresses in one IPv6 /64 share login and admission budgets', async () => {
+  const dataDir=mkdtempSync('/tmp/relay-ipv6-test-'); let app;
+  try {
+    app=await createGateway({dataDir,adminToken,autoStart:false,trustedProxies:'127.0.0.1'});
+    await new Promise(r=>app.server.listen(0,'127.0.0.1',r));
+    await app.db.prepare('INSERT INTO limits VALUES(?,?,?)').run('login:2001:db8:1:2::/64',Date.now(),19);
+    const call=ip=>fetch('http://127.0.0.1:'+app.server.address().port+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json','X-Forwarded-For':ip},body:JSON.stringify({token:'wrong'})});
+    assert.equal((await call('2001:db8:1:2::a')).status,401);
+    assert.equal((await call('2001:db8:1:2:ffff:1234:5678:9abc')).status,429);
+    assert.equal((await call('2001:db8:1:3::a')).status,401);
+    assert.equal(app.abuse.buckets.get('http:2001:db8:1:2::/64').count,2);
+    assert.equal(app.abuse.buckets.has('http:2001:db8:1:2::a'),false);
   } finally {await app?.close();rmSync(dataDir,{recursive:true,force:true});}
 });
 

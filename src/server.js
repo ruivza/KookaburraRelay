@@ -3,7 +3,7 @@ import {Alerts} from './alerts.js';
 import {accessAPI} from './access-api.js';
 import {Backups} from './backups.js';
 import { loadEncryption } from './master-key.js';
-import { clientAddressResolver } from './client-address.js';
+import { clientAddressResolver, rateKey } from './client-address.js';
 import {Maintenance} from './maintenance.js';
 // Standalone push gateway and administrator HTTP API.
 import http from "node:http";
@@ -217,8 +217,8 @@ export async function createGateway({
       };
       try {
         if (shutdown || ownershipLost) return send(503, { error: "Gateway shutting down" });
-        req.clientAddress = addressFor(req);
-        release = abuse.admit(req.clientAddress);
+        req.clientAddress = addressFor(req); req.rateKey = rateKey(req.clientAddress);
+        release = abuse.admit(req.rateKey);
         const url = new URL(req.url, "http://localhost");
         path = url.pathname;
         if (req.method === 'GET' && ['/logo.png','/favicon.png'].includes(path)) {
@@ -245,10 +245,10 @@ export async function createGateway({
         }
         if (path.startsWith("/admin/")) {
           await security.authenticate(bearer(req));
-          (await limit("admin:" + req.clientAddress, 600, 60000));
+          (await limit("admin:" + req.rateKey, 600, 60000));
         }
         if (path === '/monitor/report' || path === '/metrics') {
-          (await limit('probe:' + req.clientAddress, 120, 60000));
+          (await limit('probe:' + req.rateKey, 120, 60000));
           if (!timingSafeEqual(Buffer.from(hash(bearer(req))), Buffer.from(hash(monitorToken)))) fail(401, 'Unauthorized');
         }
         if (["POST", "PUT", "DELETE"].includes(req.method)) {
@@ -268,13 +268,13 @@ export async function createGateway({
             fail(400, "Invalid JSON");
         }
         if (path === '/auth/login' && req.method === 'POST') {
-          await limit('login:'+req.clientAddress,20,60000);
+          await limit('login:'+req.rateKey,20,60000);
           return send(200,await security.login(body));
         }
         if (path.startsWith('/admin/security')) {
           if(path === '/admin/security' && req.method==='GET') return send(200,await security.status());
           if(req.method==='POST') {
-            await limit('security:'+req.clientAddress,10,60000);
+            await limit('security:'+req.rateKey,10,60000);
             const actions={'/admin/security/token':'changeToken','/admin/security/setup':'setup','/admin/security/confirm':'confirm','/admin/security/disable':'disable'};
             const action=actions[path];if(action){const result=await security[action](body);await monitor.record({kind:'audit',action:'security.'+action,requestId});return send(200,result);}
           }
@@ -282,7 +282,7 @@ export async function createGateway({
         if(path.startsWith('/admin/backups')) {
         if(path==='/admin/backups'&&req.method==='GET')return send(200,await backups.status());
         if(['PUT','POST'].includes(req.method)) {
-          await limit('backup-admin:'+req.clientAddress,10,60000);
+          await limit('backup-admin:'+req.rateKey,10,60000);
           let result,action;
           if(path==='/admin/backups'&&req.method==='PUT'){result=await backups.save(body);action='backup.settings';}
           if(path==='/admin/backups/run'&&req.method==='POST'){result=await backups.enqueue();action='backup.run';}
@@ -306,7 +306,7 @@ export async function createGateway({
         if (path.startsWith('/admin/') && await accessAPI({path,method:req.method,body,params:url.searchParams,access,abuse,alerts,monitor,send,requestId})) return;
         if (path === '/v1/access' && req.method === 'GET') return send(200, await access.publicPolicy(url.searchParams.get('appId') || defaultApp));
         if (path === '/v1/server-tickets' && req.method === 'POST') return send(200, await access.ticket(bearer(req),body));
-        if (path === '/v1/integrity/challenges' && req.method === 'POST') return send(200, await access.challenge(body,req.clientAddress));
+        if (path === '/v1/integrity/challenges' && req.method === 'POST') return send(200, await access.challenge(body,req.rateKey));
         if (path === "/v1/status" && req.method === "GET") {
           const appId =
             new URL(req.url, "http://localhost").searchParams.get("appId") ||

@@ -12,6 +12,15 @@ export function normalizeIP(value) {
   return address;
 }
 
+// Rate-limit buckets: one IPv6 subscriber usually controls a whole /64, so rotating inside it must not reset budgets.
+export function rateKey(value) {
+  const address = normalizeIP(value);
+  if (isIP(address) === 4) return address;
+  const [head, tail = ''] = address.split('::'), left = head ? head.split(':') : [], right = tail ? tail.split(':') : [];
+  const words = [...left, ...Array(8 - left.length - right.length).fill('0'), ...right];
+  return words.slice(0, 4).map(word => parseInt(word, 16).toString(16)).join(':') + '::/64';
+}
+
 // Only explicit IPs/CIDRs are trusted; never trust a caller-selected hop count.
 export function clientAddressResolver(value = '') {
   const trusted = new BlockList();
