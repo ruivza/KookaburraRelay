@@ -6,7 +6,8 @@ docker compose version >/dev/null
 umask 077
 if [ ! -f .env ]; then
   password=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
-  printf 'POSTGRES_PASSWORD=%s\nGATEWAY_BIND=127.0.0.1\nGATEWAY_PORT=3220\n' "$password" > .env
+  app_password=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+  printf 'POSTGRES_PASSWORD=%s\nGATEWAY_DB_USER=relay_app\nGATEWAY_DB_PASSWORD=%s\nGATEWAY_BIND=127.0.0.1\nGATEWAY_PORT=3220\n' "$password" "$app_password" > .env
 fi
 configured_image=${GATEWAY_IMAGE:-$(sed -n 's/^GATEWAY_IMAGE=//p' .env | tail -n 1)}
 if [ -n "$configured_image" ]; then

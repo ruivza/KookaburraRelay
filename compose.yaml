@@ -1,4 +1,7 @@
 name: kookaburra-relay
+# The gateway and backup worker use a non-superuser role that owns schema relay.
+# A .env without GATEWAY_DB_USER keeps the superuser until ops/create-app-role.sh runs.
+x-database-url: &database-url postgresql://${GATEWAY_DB_USER:-kookaburra}:${GATEWAY_DB_PASSWORD:-${POSTGRES_PASSWORD:?Run install.sh first}}@postgres:5432/kookaburra
 services:
   gateway:
     image: ${GATEWAY_IMAGE:-kookaburra-relay:local}
@@ -11,11 +14,13 @@ services:
         max-file: "5"
     init: true
     stop_grace_period: 45s
+    mem_limit: ${GATEWAY_MEM_LIMIT:-512m}
+    pids_limit: 256
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      GATEWAY_DATABASE_URL: postgresql://kookaburra:${POSTGRES_PASSWORD:?Run install.sh first}@postgres:5432/kookaburra
+      GATEWAY_DATABASE_URL: *database-url
       GATEWAY_DATABASE_SCHEMA: relay
       GATEWAY_TRUSTED_PROXIES: ${GATEWAY_TRUSTED_PROXIES:-}
       GATEWAY_BACKUP_INTERVAL_SECONDS: ${GATEWAY_BACKUP_INTERVAL_SECONDS:-86400}
@@ -34,6 +39,9 @@ services:
   postgres:
     image: postgres:18-alpine
     restart: unless-stopped
+    # PostgreSQL forks a process per connection; the two pools open about 20.
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
+    pids_limit: 256
     logging:
       driver: local
       options:
@@ -43,8 +51,12 @@ services:
       POSTGRES_USER: kookaburra
       POSTGRES_DB: kookaburra
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run install.sh first}
+      # Read only by ops/postgres-init when the database volume is first created.
+      RELAY_APP_USER: ${GATEWAY_DB_USER:-kookaburra}
+      RELAY_APP_PASSWORD: ${GATEWAY_DB_PASSWORD:-}
     volumes:
       - kookaburra-postgres:/var/lib/postgresql
+      - ./ops/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kookaburra -d kookaburra"]
       interval: 5s
@@ -57,19 +69,21 @@ services:
       dockerfile: Dockerfile.backup
     restart: unless-stopped
     init: true
+    mem_limit: ${BACKUP_MEM_LIMIT:-512m}
+    pids_limit: 128
     depends_on:
       gateway:
         condition: service_healthy
       postgres:
         condition: service_healthy
     environment:
-      GATEWAY_DATABASE_URL: postgresql://kookaburra:${POSTGRES_PASSWORD:?Run install.sh first}@postgres:5432/kookaburra
+      GATEWAY_DATABASE_URL: *database-url
       GATEWAY_DATABASE_SCHEMA: relay
       GATEWAY_DATA_DIR: /gateway-data
       PGHOST: postgres
       PGDATABASE: kookaburra
-      PGUSER: kookaburra
-      PGPASSWORD: ${POSTGRES_PASSWORD:?Run install.sh first}
+      PGUSER: ${GATEWAY_DB_USER:-kookaburra}
+      PGPASSWORD: ${GATEWAY_DB_PASSWORD:-${POSTGRES_PASSWORD:?Run install.sh first}}
     volumes:
       - kookaburra-data:/gateway-data:ro
       - ./.env:/gateway-config.env:ro
@@ -78,6 +92,10 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    # Root with only DAC_OVERRIDE: it reads the gateway's uid 1000 mode 0600 data
+    # files and the host's private .env, and writes ./backups, which Docker and
+    # earlier releases created as root. A fixed non-root uid cannot do all three
+    # on existing installations; see docs/OPERATIONS.md.
     cap_drop: [ALL]
     cap_add: [DAC_OVERRIDE]
     security_opt: ["no-new-privileges:true"]
