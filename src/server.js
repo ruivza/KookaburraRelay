@@ -145,6 +145,8 @@ export async function createGateway({
     const monitorPath = resolve(dataDir, 'monitor.token');
     if (!existsSync(monitorPath)) writeFileSync(monitorPath, secret(), { mode: 0o600, flag: 'wx' });
     const monitorToken = readFileSync(monitorPath, 'utf8').trim();
+    // Only unauthenticated enrollment keys share a row cap; operator, login and sender keys never fail on capacity.
+    const enrollmentKey = /^(enroll-ip|enroll-token|confirm-ip):/;
     async function limit(key, maximum, window = 3600000) {
       await db.transaction(async () => {
         await db.query('SELECT pg_advisory_xact_lock(72841105)');
@@ -152,7 +154,7 @@ export async function createGateway({
         const previous = await db.prepare('SELECT * FROM limits WHERE key=?').get(key);
         if (previous && previous.start > time-window && previous.count >= maximum)
           abuse.reject('source_or_device', (previous.start + window - time) / 1000);
-        if (!previous && (await db.prepare('SELECT count(*) n FROM limits').get()).n >= 20000)
+        if (!previous && enrollmentKey.test(key) && (await db.prepare("SELECT count(*) n FROM limits WHERE key LIKE 'enroll-%' OR key LIKE 'confirm-ip:%'").get()).n >= 20000)
           abuse.reject('limit_capacity', 60, 503);
         await db.prepare(`INSERT INTO limits VALUES(?,?,1) ON CONFLICT(key) DO UPDATE SET
           count=CASE WHEN limits.start<=? THEN 1 ELSE limits.count+1 END,

@@ -183,6 +183,25 @@ test('memory admission and logging remain bounded under changing keys and slow w
   slots.forEach(release => { release(); release(); }); assert.equal(abuse.requests, 0);
 });
 
+test('junk enrollments cannot exhaust rate-limit capacity for administrators and senders', async () => {
+  const f = await fixture();
+  try {
+    const grant = await f.enroll();
+    const unknown = await f.call('/v1/registrations', { ...f.input(2), appId: 'unknown-app' }, '', '203.0.113.7');
+    assert.equal(unknown.status, 404);
+    assert.equal((await f.app.db.prepare("SELECT count(*) n FROM limits WHERE key LIKE '%unknown-app%' OR key LIKE '%203.0.113.7'").get()).n, 0);
+    // Model a flood of caller-chosen device tokens that filled the enrollment share of the table.
+    await f.app.db.query("INSERT INTO limits SELECT 'enroll-token:junk-'||n,$1,1 FROM generate_series(1,20000) n", [f.app.abuse.now()]);
+    const blocked = await f.call('/v1/registrations', f.input(3), '', '203.0.113.8');
+    assert.equal(blocked.status, 503); assert.equal(blocked.body.reason, 'limit_capacity');
+    assert.equal(f.app.abuse.challenges, 0);
+    const login = await f.call('/auth/login', { token: 'test-admin-'.repeat(5) }, '', '198.51.100.20');
+    assert.equal(login.status, 200);
+    assert.equal((await f.call('/admin/apps', undefined, login.body.session, '198.51.100.21')).status, 200);
+    assert.equal((await f.call('/v1/validate', scope(grant), grant.credential, '198.51.100.22')).status, 200);
+  } finally { await f.close(); }
+});
+
 test('a source exhausting its own request budget neither consumes nor blocks the shared global budget', () => {
   const abuse = new AbuseProtection({ now: () => 0 });
   let limited = 0;

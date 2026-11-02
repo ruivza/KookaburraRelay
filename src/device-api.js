@@ -25,6 +25,8 @@ export async function deviceAPI({ req, path, body, send, applications, db, queue
           !["sandbox", "production"].includes(body.environment)
         )
           fail(400, "Invalid registration");
+        // Unknown applications must not create rate-limit rows.
+        await applications.row(appId);
         const release = abuse.reserveChallenge();
         let id;
         try {
