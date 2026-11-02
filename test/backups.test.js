@@ -263,6 +263,28 @@ test('S3 SDK signs uploads for R2, AWS virtual hosts and custom path-style servi
  }finally{await f.close();}
 });
 
+test('custom S3 endpoints resolving to private, loopback or link-local addresses are refused before connecting',async()=>{
+ const {S3Storage}=await import('../src/s3-storage.js');const f=await fixture();try{
+  const file=f.dir+'/guard.age';await writeFile(file,'encrypted guard fixture');
+  const custom={...f.settings,provider:'custom',endpoint:'https://objects.example.com:9443',region:'us-east-1',forcePathStyle:true};
+  const answer=address=>async host=>{answer.hosts.push(host);return [{address,family:address.includes(':')?6:4}];};
+  for(const address of ['127.0.0.1','10.0.0.8','172.20.1.1','192.168.10.5','169.254.169.254','::1','fe80::1','fd00::5','::ffff:127.0.0.1']){
+   answer.hosts=[];
+   // No requestHandler override: the request goes through the SDK's real Node HTTP handler.
+   const storage=new S3Storage(custom,'fixture-secret',{resolver:answer(address)});
+   try{await assert.rejects(storage.upload(file,'relay-test/guard.age'),/StorageEndpointNotPublic/,address);}finally{storage.close();}
+   assert.deepEqual(answer.hosts,['objects.example.com'],address);
+   const versioned=new S3Storage(custom,'fixture-secret',{resolver:answer(address)});
+   try{await assert.rejects(versioned.upload(file,'relay-test/guard.age',undefined,{versioned:true,backupId:'job'}),/StorageEndpointNotPublic/,address);}finally{versioned.close();}
+  }
+  await f.save({settings:custom,applicationKey:'replacement-fixture-secret'});
+  const worker=new BackupWorker({db:f.app.db,backups:f.b,root:f.dir,now:f.now,storageFactory:(s,k)=>new S3Storage(s,k,{resolver:answer('169.254.169.254')})});
+  await worker.initialize();const job=await f.b.enqueue('test');await worker.tick();
+  const row=await f.app.db.prepare('SELECT * FROM backup_jobs WHERE id=?').get(job.id);
+  assert.equal(row.state,'failed');assert.equal(row.error,'StorageEndpointNotPublic');
+ }finally{await f.close();}
+});
+
 test('fixed-name uploads create versions and deduplicate a lost response retry',async()=>{
  const {S3Storage}=await import('../src/s3-storage.js');const f=await fixture();try{
   const file=f.dir+'/version.age';const versions=[];let lost=false;

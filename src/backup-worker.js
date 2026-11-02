@@ -11,14 +11,14 @@ import {S3Storage} from './s3-storage.js';
 import {encryptFile} from './backup-crypto.js';
 const exec=promisify(execFile);
 const exists=async path=>!!await stat(path).catch(()=>null);
-const permanent=new Set(['BucketVersioningRequired','VersioningCheckFailed','EncryptionFailed','BackupTooLarge','RemoteObjectConflict','LocalBackupMissing','AccessDenied','BucketOrObjectNotFound']);
+const permanent=new Set(['BucketVersioningRequired','VersioningCheckFailed','EncryptionFailed','BackupTooLarge','RemoteObjectConflict','LocalBackupMissing','AccessDenied','BucketOrObjectNotFound','StorageEndpointNotPublic']);
 function safeError(error){
   const status=error.$metadata?.httpStatusCode;
   if(status===401||status===403)return 'AccessDenied';
   if(status===404)return 'BucketOrObjectNotFound';
   if(status===429)return 'StorageThrottled';
   if(status>=500)return 'StorageUnavailable';
-  return ['BucketVersioningRequired','VersioningCheckFailed','EncryptionFailed','BackupTooLarge','RemoteObjectConflict','LocalBackupMissing','LocalBackupFailed','RemoteVerificationFailed'].includes(error.message)?error.message:'BackupOperationFailed';
+  return ['BucketVersioningRequired','VersioningCheckFailed','EncryptionFailed','BackupTooLarge','RemoteObjectConflict','LocalBackupMissing','LocalBackupFailed','RemoteVerificationFailed','StorageEndpointNotPublic'].includes(error.message)?error.message:'BackupOperationFailed';
 }
 export class BackupWorker {
   constructor({db,backups,root='/backups',now=Date.now,storageFactory=(s,k)=>new S3Storage(s,k),encrypt=encryptFile,localBackup,script='/ops/backup-once.sh'}){

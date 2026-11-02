@@ -120,6 +120,8 @@ The script checks archive members and checksums, restores a temporary database, 
 
 Remote backups are disabled by default. The console supports B2, R2, AWS S3, and compatible HTTPS S3 endpoints using long-lived access keys. Create an `age` key pair offline, store the private identity securely, and give the gateway only its public recipient. Remote archives are `.tar.age`, byte for byte the encrypted local bundle; losing the private identity prevents decryption.
 
+A custom endpoint must resolve only to public addresses, like webhook alerts. If any DNS answer is loopback, private, link-local or otherwise internal, the worker does not connect and records `StorageEndpointNotPublic`; an object store on the local network is therefore not supported as a custom endpoint. B2, R2 and AWS endpoints are restricted to their providers' domains instead and may resolve to private VPC endpoints.
+
 Use a private bucket and narrowly scoped credentials. Connection tests upload a small encrypted object; they do not prove database backup or recovery. Configure remote object and version retention at the storage provider: the gateway does not delete remote objects. Fixed-filename mode requires enabled bucket versioning and permissions to inspect it and read object versions. Keep prefixes unique per gateway.
 
 To keep the identity off the gateway host, decrypt a downloaded archive on the machine holding it, copy the plaintext archive over privately, and verify that:

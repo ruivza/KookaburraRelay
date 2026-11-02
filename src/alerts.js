@@ -1,8 +1,8 @@
 import https from 'node:https';
 import {lookup} from 'node:dns/promises';
 import {isIP} from 'node:net';
-import ipaddr from 'ipaddr.js';
 import {createHmac,randomUUID} from 'node:crypto';
+import {requirePublic} from './net-guard.js';
 const fail=(status,message)=>{throw Object.assign(Error(message),{status});};
 export const alertDefaults=Object.freeze({enabled:false,rejections:100,queueDepth:1000,oldestSeconds:300,failures:10,cooldownSeconds:900});
 export function webhookURL(value) {
@@ -15,7 +15,7 @@ export async function sendWebhook({url,secret,payload,id},resolver=lookup) {
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
   try {
     const addresses=await Promise.race([resolver(endpoint.hostname,{all:true}),new Promise((_,reject)=>controller.signal.addEventListener('abort',()=>reject(Error('Webhook timeout')),{once:true}))]);
-    if(!addresses.length||addresses.some(({address})=>!ipaddr.isValid(address)||ipaddr.process(address).range()!=='unicast'))throw Error('Webhook requires public addresses');
+    requirePublic(addresses,'Webhook requires public addresses');
     if(controller.signal.aborted)throw Error('Webhook timeout');
     const address=addresses[0].address,body=JSON.stringify(payload);
     await new Promise((resolve,reject)=>{

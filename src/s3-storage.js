@@ -1,15 +1,21 @@
 import {S3Client,PutObjectCommand,HeadObjectCommand,GetBucketVersioningCommand} from '@aws-sdk/client-s3';
+import {Agent} from 'node:https';
 import {createReadStream} from 'node:fs';
 import {stat} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {validateTarget} from './storage-target.js';
+import {publicLookup} from './net-guard.js';
 export class S3Storage {
-  constructor(settings,applicationKey,{client,requestHandler}={}){
+  constructor(settings,applicationKey,{client,requestHandler,resolver}={}){
     settings=validateTarget(settings);
     this.settings=settings;
+    // Custom endpoints may name any host, so connections are limited to public
+    // addresses. Provider endpoints are pinned to their own domains and may
+    // legitimately resolve to private VPC endpoints.
+    const agent=settings.provider==='custom'?{httpsAgent:new Agent({keepAlive:true,maxSockets:50,lookup:publicLookup('StorageEndpointNotPublic',resolver)})}:{};
     this.client=client||new S3Client({endpoint:settings.endpoint,region:settings.region,forcePathStyle:settings.forcePathStyle,maxAttempts:1,
       requestChecksumCalculation:'WHEN_REQUIRED',responseChecksumValidation:'WHEN_REQUIRED',
-      credentials:{accessKeyId:settings.keyId,secretAccessKey:applicationKey},requestHandler:requestHandler||{connectionTimeout:10000,requestTimeout:120000}});
+      credentials:{accessKeyId:settings.keyId,secretAccessKey:applicationKey},requestHandler:requestHandler||{connectionTimeout:10000,requestTimeout:120000,...agent}});
   }
   async upload(file,key,signal,{versioned=false,backupId}={}){
     if(versioned&&(!backupId||typeof backupId!=='string'))throw Error('RemoteVerificationFailed');
@@ -21,7 +27,8 @@ export class S3Storage {
     const requestSignal=AbortSignal.any([signal||new AbortController().signal,AbortSignal.timeout(600000)]);
     const verify=response=>response.ContentLength===size&&response.Metadata?.sha256===digest&&(!versioned||response.Metadata?.['backup-id']===backupId);
     if(versioned){
-      let state;try{state=await this.client.send(new GetBucketVersioningCommand({Bucket:this.settings.bucket}),{abortSignal:requestSignal});}catch{throw Error('VersioningCheckFailed');}
+      let state;try{state=await this.client.send(new GetBucketVersioningCommand({Bucket:this.settings.bucket}),{abortSignal:requestSignal});}
+      catch(error){throw Error(error.message==='StorageEndpointNotPublic'?error.message:'VersioningCheckFailed');}
       if(state.Status!=='Enabled')throw Error('BucketVersioningRequired');
     }
     const result=response=>{
