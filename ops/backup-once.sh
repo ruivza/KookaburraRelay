@@ -14,9 +14,12 @@ chmod 700 "$root"
 stage=$(mktemp -d "$root/.snapshot.XXXXXXXX")
 partial=
 trap 'rm -rf "$stage"; if [ -n "$partial" ]; then rm -f "$partial"; fi' EXIT HUP INT TERM
-for file in master.key admin.token monitor.token; do
+for file in master.key monitor.token; do
   cp "$data/$file" "$stage/$file"
 done
+# admin.token is never written when the first token came from GATEWAY_ADMIN_TOKEN;
+# an empty placeholder keeps the bundle layout that verify-backup.sh checks.
+if [ -e "$data/admin.token" ]; then cp "$data/admin.token" "$stage/admin.token"; else : > "$stage/admin.token"; fi
 [ "$(wc -c < "$stage/master.key" | tr -d ' ')" = 32 ]
 cp "$config" "$stage/.env"
 pg_dump --no-owner --no-privileges --format=custom --schema=relay --file="$stage/database.dump"

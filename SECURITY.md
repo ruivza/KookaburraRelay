@@ -14,7 +14,8 @@ Security fixes target the current default branch and its latest release. Older v
 
 - Terminate public traffic at HTTPS and restrict administrator access. The console and business APIs share one port.
 - Enable admin two-factor authentication. Protect session storage and use a trusted browser.
-- Store the database and matching `master.key` together in protected backups. Local backup archives also contain secrets; remote archives use the configured `age` public key.
+- Store the database and matching `master.key` together in protected backups. With an `age` public key configured, local and remote archives are encrypted to it; without one, local archives are plaintext and contain secrets.
+- Run the gateway as the non-superuser database role. New installations do; existing ones migrate with `ops/create-app-role.sh`.
 - Grant vendor and object-storage credentials only the permissions required by the deployment.
 - Configure only verified reverse-proxy addresses. Forwarded headers are ignored by default.
 - App Attest, Play Integrity, and server approval are disabled by default. Enable them when compatible integrations have been verified.

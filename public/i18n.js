@@ -240,6 +240,7 @@ B2 权限不足，请检查应用密钥|B2 access denied; check the application 
 本机备份已不存在，请创建新备份|Local backup no longer exists; create a new backup
 本机备份失败，请检查磁盘和数据库|Local backup failed; check disk and database availability
 远端对象校验失败|Remote object verification failed
+自定义 Endpoint 解析到内网或保留地址，已拒绝连接|The custom endpoint resolves to a private or reserved address and was refused
 B2 请求受限|B2 request throttled
 B2 暂时不可用|B2 temporarily unavailable
 备份操作失败，请检查网络与服务日志|Backup operation failed; check network and service logs

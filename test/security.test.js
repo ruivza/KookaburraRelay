@@ -1,5 +1,5 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync,readFileSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+import {mkdtempSync,rmSync,readFileSync,writeFileSync,symlinkSync,lstatSync,existsSync,readdirSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {createGateway} from './helpers.mjs';import {totp,base32,rotatedMarker} from '../src/security.js';
 test('TOTP matches RFC 6238 SHA-1 vectors (six digit truncation)',()=>{const secret=base32(Buffer.from('12345678901234567890'));for(const [time,code]of [[59,'287082'],[1111111109,'081804'],[1111111111,'050471'],[1234567890,'005924'],[2000000000,'279037'],[20000000000,'353130']])assert.equal(totp(secret,time*1000),code);});
 test('two-step setup, replay protection, single-use recovery, rotation and session revocation',async()=>{
@@ -84,5 +84,16 @@ test('bootstrap token file is read only before a token is stored, replaced by a 
   writeFileSync(file,rotatedMarker+'\n');await app.db.exec('DELETE FROM admin_security');await app.close();app=await start('');
   const regenerated=readFileSync(file,'utf8').trim();assert.notEqual(regenerated,rotatedMarker);assert.ok(regenerated.length>=32);
   assert.ok((await app.security.login({token:regenerated})).session);
+ }finally{await app?.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('admin token file writes replace a planted symlink instead of writing through it',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'relay-token-link-')),file=join(dir,'admin.token'),outside=join(dir,'outside'),next='linked-admin-token-'.repeat(3);let app;
+ try{
+  symlinkSync(outside,file);app=await createGateway({dataDir:dir,adminToken:'',autoStart:false});
+  assert.ok(lstatSync(file).isFile());assert.equal(existsSync(outside),false);const initial=readFileSync(file,'utf8').trim();assert.ok(initial.length>=32);
+  rmSync(file);writeFileSync(outside,'untouched');symlinkSync(outside,file);
+  await app.security.changeToken({currentToken:initial,newToken:next});
+  assert.equal(readFileSync(outside,'utf8'),'untouched');assert.ok(lstatSync(file).isFile());assert.equal(readFileSync(file,'utf8'),rotatedMarker+'\n');
+  assert.deepEqual(readdirSync(dir).filter(name=>name.endsWith('.tmp')),[]);
  }finally{await app?.close();rmSync(dir,{recursive:true,force:true});}
 });

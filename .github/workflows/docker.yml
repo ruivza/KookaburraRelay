@@ -44,7 +44,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y age
       - run: npm ci --ignore-scripts
       - run: npm run check
-      - run: for file in install.sh ops/*.sh; do sh -n "$file"; done
+      - run: for file in install.sh ops/*.sh ops/postgres-init/*.sh scripts/*.sh; do sh -n "$file"; done
       - run: npm audit --omit=dev --audit-level=high
       - name: Scan Git history for secrets
         run: docker run --rm --volume "$GITHUB_WORKSPACE:/repo:ro" zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f git /repo --redact --no-banner --log-opts="--all"

@@ -129,6 +129,15 @@ test('without a recipient the backup script warns, keeps a plaintext bundle and 
   assert.equal((await stat(root+'/'+file)).mode&0o777,0o600);
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
+test('a gateway whose admin token came from the environment still backs up with an empty admin.token',async()=>{
+ const dir=mkdtempSync('/tmp/relay-backup-script-');try{
+  const env=await scriptEnvironment(dir),root=dir+'/backups';rmSync(env.GATEWAY_DATA_DIR+'/admin.token');
+  const result=await exec('sh',[backupScript],{env:{...process.env,...env,BACKUP_DIR:root}});
+  const file=/^Backup completed: (relay-[A-Za-z0-9-]+\.tar)$/m.exec(result.stdout)?.[1];assert.ok(file,result.stdout);
+  assert.deepEqual(await members(root+'/'+file),bundleMembers);
+  assert.equal((await exec('tar',['-xOf',root+'/'+file,'admin.token'])).stdout,'');
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
 test('disabling remote backup cancels queued uploads while local jobs still run',async()=>{
  const f=await fixture();try{
   await f.save();const testJob=await f.b.enqueue('test');

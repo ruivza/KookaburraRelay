@@ -2,11 +2,13 @@ import QRCode from 'qrcode';
 import { randomBytes, createHash, createHmac, timingSafeEqual, scrypt } from 'node:crypto';
 import { promisify } from 'node:util';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 // Replaces the bootstrap token after a rotation; backups keep copying the file, but it holds no secret.
 export const rotatedMarker='# Kookaburra Relay admin token was changed in the console and is not stored in this file.';
 const derive=promisify(scrypt), digest=s=>createHash('sha256').update(s).digest('hex');
 const fail=(status,message)=>{throw Object.assign(Error(message),{status});};
+// Exclusive temp file plus rename: a symlink planted at the target is replaced, never written through.
+function replaceFile(path,content){const temp=`${path}.${randomBytes(6).toString('hex')}.tmp`;try{writeFileSync(temp,content,{mode:0o600,flag:'wx'});renameSync(temp,path);}catch(error){rmSync(temp,{force:true});throw error;}}
 const equal=(a,b)=>a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 const alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 export function base32(bytes){let bits=0,value=0,out='';for(const byte of bytes){value=(value<<8)|byte;bits+=8;while(bits>=5){out+=alphabet[(value>>>(bits-5))&31];bits-=5;}}if(bits)out+=alphabet[(value<<(5-bits))&31];return out;}
@@ -34,7 +36,7 @@ export class Security {
     }
     if(!token){
       token=existsSync(this.adminPath)?readFileSync(this.adminPath,'utf8').trim():'';
-      if(!token||token===rotatedMarker){token=randomBytes(32).toString('base64url');writeFileSync(this.adminPath,token,{mode:0o600});}
+      if(!token||token===rotatedMarker){token=randomBytes(32).toString('base64url');replaceFile(this.adminPath,token);}
       if(token.length<32)throw Error('Gateway admin token must be at least 32 characters');
     }
     await this.db.prepare('INSERT INTO admin_security(id,token_hash) VALUES(1,?) ON CONFLICT DO NOTHING').run(await tokenHash(token));
@@ -71,7 +73,7 @@ export class Security {
     if(typeof body.newToken!=='string'||body.newToken.length<32||body.newToken.length>256||/\s/.test(body.newToken))fail(400,'New token must contain 32–256 characters without spaces');
     const result=await this.db.transaction(async()=>{const row=await this.row();await this.reauthenticate(row,body);if(await verifyToken(body.newToken,row.token_hash))fail(400,'New token must differ from current token');await this.db.prepare('UPDATE admin_security SET token_hash=?,pending_secret=NULL,pending_until=NULL WHERE id=1').run(await tokenHash(body.newToken));await this.db.exec('DELETE FROM admin_sessions');return {signInAgain:true};});
     // The rotation is committed; a stale bootstrap token must not stay in the data directory or its backups.
-    try{writeFileSync(this.adminPath,rotatedMarker+'\n',{mode:0o600});}catch{console.error('Admin token file could not be replaced after rotation');}
+    try{replaceFile(this.adminPath,rotatedMarker+'\n');}catch{console.error('Admin token file could not be replaced after rotation');}
     return result;
   }
   async setup(body){return this.db.transaction(async()=>{

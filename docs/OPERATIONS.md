@@ -5,13 +5,13 @@
 Download the source archive, gateway image archive and backup image archive for your platform from [Releases](https://github.com/ruivza/KookaburraRelay/releases). Verify them against `SHA256SUMS`, extract the source, then load both images:
 
 ```sh
-docker load -i kookaburra-relay-0.1.2-linux-amd64.tar.gz
-docker load -i kookaburra-relay-backup-0.1.2-linux-amd64.tar.gz
+docker load -i kookaburra-relay-0.1.3-linux-amd64.tar.gz
+docker load -i kookaburra-relay-backup-0.1.3-linux-amd64.tar.gz
 ```
 
-Use `arm64` archives on ARM hosts. For a fresh installation, run `umask 077; cp .env.example .env` and replace `POSTGRES_PASSWORD` and `GATEWAY_DB_PASSWORD` with two different long random hex passwords. Set `GATEWAY_IMAGE=kookaburra-relay:0.1.2` and `GATEWAY_BACKUP_IMAGE=kookaburra-relay-backup:0.1.2`, then run `docker compose up -d --no-build --wait`. Keep an existing deployment's `.env` and data volumes.
+Use `arm64` archives on ARM hosts. For a fresh installation, run `umask 077; cp .env.example .env` and replace `POSTGRES_PASSWORD` and `GATEWAY_DB_PASSWORD` with two different long random hex passwords. Set `GATEWAY_IMAGE=kookaburra-relay:0.1.3` and `GATEWAY_BACKUP_IMAGE=kookaburra-relay-backup:0.1.3`, then run `docker compose up -d --no-build --wait`. Keep an existing deployment's `.env` and data volumes.
 
-GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.2` and `ghcr.io/ruivza/kookaburrarelay-backup:0.1.2`. Their package visibility must be public for anonymous pulls; repository visibility does not change it automatically.
+GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.3` and `ghcr.io/ruivza/kookaburrarelay-backup:0.1.3`. Their package visibility must be public for anonymous pulls; repository visibility does not change it automatically.
 
 ## Configuration
 
@@ -31,7 +31,7 @@ GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.2` and `ghcr.io/ruivza/ko
 | `GATEWAY_BACKUP_INTERVAL_SECONDS`, `GATEWAY_BACKUP_RETENTION_DAYS` | Initial backup schedule; later changes use the console |
 | `GATEWAY_MEM_LIMIT`, `POSTGRES_MEM_LIMIT`, `BACKUP_MEM_LIMIT` | Compose container memory limits; default `512m`, `1g` and `512m`. Process limits are fixed at 256, 256 and 128 |
 
-Administrator tokens and backup defaults are imported only during their first database initialization. Later environment changes do not replace stored settings. Rotating the admin token invalidates sessions but does not update `admin.token`.
+Administrator tokens and backup defaults are imported only during their first database initialization. Later environment changes do not replace stored settings; a `GATEWAY_ADMIN_TOKEN` that differs from the stored token only logs a startup warning. Without `GATEWAY_ADMIN_TOKEN`, the first token is written to `admin.token`. Rotating the admin token invalidates sessions and replaces that file with a one-line note, so it no longer holds a usable token.
 
 ## Network and process ownership
 
@@ -100,7 +100,7 @@ Retention settings default to daily cleanup: request logs 14 days, error logs 30
 
 ## Backup and recovery
 
-Compose starts a backup worker that immediately creates a local archive and normally repeats daily, retaining about 14 days. Later schedule changes use the console. Archives contain a consistent PostgreSQL `relay` snapshot, matching `master.key`, initial admin and monitor tokens, `.env`, metadata, and SHA-256 checksums.
+Compose starts a backup worker that immediately creates a local archive and normally repeats daily, retaining about 14 days. Later schedule changes use the console. Archives contain a consistent PostgreSQL `relay` snapshot, matching `master.key`, `admin.token` (empty when the first token came from `GATEWAY_ADMIN_TOKEN`), `monitor.token`, `.env`, metadata, and SHA-256 checksums.
 
 When the backup settings hold an `age` public key, each local bundle is written as `relay-*.tar.age`, encrypted to that key, and no plaintext archive is kept; remote uploads reuse that file instead of encrypting again. Without a key, bundles stay plaintext `relay-*.tar` files containing unencrypted secrets, and the worker logs a warning for each one. Retention removes both formats. Protect the directory either way.
 
