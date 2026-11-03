@@ -25,14 +25,16 @@ Read application readiness and capabilities with `GET /v1/status?appId=notes`; r
 Send `POST /v1/registrations`:
 
 ```json
-{"appId":"notes","platform":"ios","channel":"apns","deviceId":"device-1","serverId":"server-1","deviceToken":"<APNs token>","environment":"sandbox","nonce":"<at least 32 characters>","kinds":["sync","alert"]}
+{"protocol":2,"appId":"notes","platform":"ios","channel":"apns","deviceId":"device-1","serverId":"server-1","deviceToken":"<APNs token>","environment":"sandbox","nonce":"<at least 32 characters>","kinds":["sync","alert"]}
 ```
+
+`protocol` selects the payload names a registration receives (see [provider payloads](#provider-payloads)); `GET /v1/status` lists the supported values in `protocols`. Protocol 2 registrations must send `appId`. Protocol 1, the default when `protocol` is omitted, keeps the earlier names and lets requests without `appId` address `perch-mail`, the default application that installations from before 0.3.0 have; new installations have no default application. Protocol 1 will be removed in the next release.
 
 Identifiers use letters, digits, underscores, and hyphens, up to 100 characters. APNs tokens are hexadecimal and normalized to lowercase. FCM uses `platform:"android"`, `channel:"fcm"`, `environment:"production"`; token case is preserved. Instead of `kinds`, `purpose:"alert"` or `purpose:"encrypted_alert"` requests that kind plus `sync`; do not send both fields. Omission requests only `sync`.
 
 When required, add a `serverTicket` and platform `integrity` proof as described in [access policies](ACCESS_SECURITY.md).
 
-HTTP 202 returns a registration ID and expiry, never the reception challenge or credentials. APNs delivers a `perchRegistration` object; FCM delivers the same object as a JSON string in `data.perchRegistration`. The client submits the received proof to `POST /v1/registrations/:id/confirm`. Verify its application, device, server, and nonce before confirming.
+HTTP 202 returns a registration ID and expiry, never the reception challenge or credentials. APNs delivers a `relayRegistration` object (`perchRegistration` under protocol 1); FCM delivers the same object as a JSON string in `data.relayRegistration` (`data.perchRegistration`). The client submits the received proof to `POST /v1/registrations/:id/confirm`. Verify its application, device, server, and nonce before confirming.
 
 Confirmation returns `registrationId`, `appId`, authorized `kinds`, `credential`, `revokeToken`, and `expiresAt`. Give only the delivery credential to the business server; keep the revoke token on the client. Credentials expire after 30 days. Revoke with `DELETE /v1/registrations/:id` using the revoke token as Bearer authorization.
 
@@ -71,4 +73,11 @@ APNs uses `mutable-content:1`; the client's Notification Service Extension decry
 
 Visible APNs alerts carry `relay:{version:1,appId,deviceId,serverId,kind}`; encrypted alerts additionally carry `encryptedNotification`. FCM ordinary alerts put `relay` in `data` as a JSON string. Clients must validate their scope.
 
-Legacy field names remain for compatibility: sync uses `perch`, and reception proof uses `perchRegistration`. FCM encodes both as JSON strings. FCM sync uses normal priority, ordinary alerts use high priority; background delivery may be delayed by the OS.
+Sync hints and reception proofs depend on the registration's protocol:
+
+| | Protocol 2 | Protocol 1 (removed in the next release) |
+| --- | --- | --- |
+| Reception proof | `relayRegistration`; APNs collapse ID `relay-enroll-<id>`, FCM collapse key `relay-enroll` | `perchRegistration`; `perch-enroll-<id>`, `perch-enroll` |
+| Sync hint | `relay:{version:2,kind:"sync",appId,deviceId}`; collapse `relay-sync` | `perch:{version:1,appId,deviceId}`; `perch-mail-sync`, `perch-sync` |
+
+FCM encodes these objects as JSON strings in `data`. FCM sync uses normal priority, ordinary alerts use high priority; background delivery may be delayed by the OS.

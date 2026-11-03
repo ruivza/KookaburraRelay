@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 — 2026-11-03
+
+Client- and operator-visible changes; read before upgrading.
+
+- Add push protocol 2. Registrations sending `"protocol":2` must name their `appId` and receive `relayRegistration` reception proofs and `relay:{version:2,kind:"sync"}` sync hints, with `relay-` APNs collapse IDs and FCM collapse keys. Protocol 1 keeps the `perch` names and remains the default for this release only. `/v1/status` adds `protocols:[1,2]`.
+- New installations no longer create the `perch-mail` application; existing installations keep it. Create applications in the console.
+- Rename metrics from `perch_gateway_*` to `relay_gateway_*`. The old names are still served, marked deprecated, for this release only.
+- Remove the `limits` and `configuration` tables and the `applications.secret` column, none of which was read any more. The SQLite importer skips them.
+- Remove the deprecated `src/b2-storage.js`; use `S3Storage` from `src/s3-storage.js`.
+- The console stores its language choice as `relay.gateway.language` and still reads one saved under the old key.
+
 ## 0.2.0 — 2026-11-03
 
 - Count hourly rate limits in memory instead of the `limits` table. They reset on restart; daily quotas stay in PostgreSQL. At most 20,000 enrollment and confirmation keys are tracked; beyond that new enrollments get 503 `limit_capacity`, and other keys never fail on capacity.
