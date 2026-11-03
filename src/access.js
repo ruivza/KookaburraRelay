@@ -430,13 +430,13 @@ export class AccessControl {
   }
   async delivery(req, entry) {
     const policy = await this.policy(entry.app_id);
-    const row = await this.cache.server(entry.server_id);
+    const row = await this.cache.server(entry.server_id, { stored: true });
     if (row?.state === 'blocked') fail(403, 'Server blocked');
     if (policy.settings.requireTrustedServers || entry.trusted_server)
       await this.authenticateServer(req.headers['x-relay-server-credential'], entry.app_id, entry.server_id);
   }
   async active(entry) {
-    const row = await this.cache.server(entry.server_id);
+    const row = await this.cache.server(entry.server_id, { stored: true });
     return row?.state !== 'blocked' && (!entry.trusted_server || row?.state === 'approved');
   }
 }

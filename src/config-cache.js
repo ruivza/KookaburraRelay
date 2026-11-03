@@ -68,9 +68,10 @@ export class ConfigCache {
   policy(id) {
     return this.get('policy:' + id, () => this.one('SELECT * FROM access_policies WHERE app_id=?', id));
   }
-  server(id) {
+  // `stored` marks an ID read from a registration: their number is bounded, so an absent server is cached too.
+  server(id, { stored = false } = {}) {
     return this.get('server:' + id, () => this.one('SELECT * FROM trusted_servers WHERE id=?', id), {
-      missing: false,
+      missing: stored,
     });
   }
   async one(sql, ...values) {
