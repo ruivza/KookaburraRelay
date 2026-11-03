@@ -1,8 +1,9 @@
-import { defaultApp, validID } from './applications.js';
+import { defaultApp } from './applications.js';
 import { requestedKinds } from './notification.js';
 import { channelCatalog } from './channels.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { confirmReplay } from './abuse.js';
+import { validateRegistration } from './access.js';
 import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
 export async function deviceAPI({
   req,
@@ -31,26 +32,13 @@ export async function deviceAPI({
     if (!channelCatalog.some(c => c.id === channel && c.platform === (body.platform ?? 'ios') && c.implemented))
       fail(501, 'Push channel not implemented');
     req.gatewayScope = { appId, channel };
-    if (
-      !validID(appId) ||
-      !validID(body.deviceId) ||
-      !validID(body.serverId) ||
-      !validID(body.nonce) ||
-      body.nonce.length < 32 ||
-      typeof body.deviceToken !== 'string' ||
-      (channel === 'apns'
-        ? !/^[a-f0-9]{32,512}$/i.test(body.deviceToken)
-        : !/^[A-Za-z0-9_:.-]{20,4096}$/.test(body.deviceToken)) ||
-      !['sandbox', 'production'].includes(body.environment)
-    )
-      fail(400, 'Invalid registration');
+    const { deviceToken: normalizedToken } = validateRegistration(body);
     // Unknown applications must not create rate-limit rows.
     await applications.row(appId);
     const release = abuse.reserveChallenge();
     let id;
     try {
       await limit('enroll-ip:' + appId + ':' + req.rateKey, 60);
-      const normalizedToken = channel === 'apns' ? body.deviceToken.toLowerCase() : body.deviceToken;
       const tokenHash = sha256Hex(appId + ':' + channel + ':' + body.environment + ':' + normalizedToken);
       await limit('enroll-token:' + tokenHash, 6);
       const accessGrant = await access.prepareRegistration(body, req.rateKey);

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { notificationSettings } from './notification.js';
 import { channelCatalog } from './channels.js';
 import { ChannelStore } from './channel-store.js';
+import { cancelJobs } from './delivery.js';
 import { fail } from './util.js';
 
 export const defaultApp = 'perch-mail';
@@ -104,12 +105,7 @@ export class Applications {
   async invalidate(id) {
     await this.db.prepare('UPDATE applications SET revision=? WHERE id=?').run(randomUUID(), id);
     await this.db.prepare('DELETE FROM registrations WHERE app_id=?').run(id);
-
-    await this.db
-      .prepare(
-        "UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason='ConfigurationChanged',updated=? WHERE app_id=? AND state IN ('queued','retrying','sending')",
-      )
-      .run(this.now(), id);
+    await cancelJobs(this.db, this.now(), 'ConfigurationChanged', 'app_id=?', [id]);
   }
   async update(id, body) {
     const row = await this.row(id);
@@ -129,11 +125,7 @@ export class Applications {
       else
         for (const kind of previous.kinds.filter(kind => !notifications.kinds.includes(kind))) {
           // Keep confirmed grants scoped as issued. Only the disabled kind's work is cancelled.
-          await this.db
-            .prepare(
-              "UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason='CapabilityDisabled',updated=? WHERE app_id=? AND kind=? AND state IN ('queued','retrying','sending')",
-            )
-            .run(this.now(), id, kind);
+          await cancelJobs(this.db, this.now(), 'CapabilityDisabled', 'app_id=? AND kind=?', [id, kind]);
           await this.db
             .prepare('DELETE FROM registrations WHERE app_id=? AND delivery_hash IS NULL AND kinds @> ?::jsonb')
             .run(id, JSON.stringify([kind]));

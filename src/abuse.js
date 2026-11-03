@@ -1,3 +1,4 @@
+import { cancelJobs } from './delivery.js';
 const DAY = 86400000;
 // A confirmed grant can be fetched again only for idempotent client retries; then its plaintext is erased.
 export const confirmReplay = 600000;
@@ -277,11 +278,9 @@ export class AbuseProtection {
           )
           .all(this.now(), this.now());
         if (expired.length)
-          await this.db.query(
-            `UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason='RegistrationExpired',updated=$1
-          WHERE registration_id=ANY($2::text[]) AND state IN ('queued','retrying','sending')`,
-            [this.now(), expired.map(r => r.id)],
-          );
+          await cancelJobs(this.db, this.now(), 'RegistrationExpired', 'registration_id=ANY(?::text[])', [
+            expired.map(r => r.id),
+          ]);
       });
       for (const [key, value] of this.buckets) if (value.until <= this.now()) this.buckets.delete(key);
     })();

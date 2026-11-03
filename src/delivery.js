@@ -2,6 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { deliveryContent, allows } from './notification.js';
 import { fail, sha256Hex } from './util.js';
 const terminal = new Set(['accepted', 'failed', 'unknown', 'cancelled']);
+const pending = ['queued', 'retrying', 'sending'];
+// Cancels the jobs matching `where` (trusted SQL with ? placeholders) and drops their stored content.
+// `states` limits it to jobs still in those states; null cancels regardless of state.
+export function cancelJobs(db, now, reason, where, params, states = pending) {
+  const scope = states ? ` AND state IN (${states.map(state => `'${state}'`).join(',')})` : '';
+  return db
+    .prepare(`UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason=?,updated=? WHERE ${where}${scope}`)
+    .run(reason, now, ...params);
+}
 const invalidToken = result =>
   result.status === 410 || ['BadDeviceToken', 'DeviceTokenNotForTopic', 'UNREGISTERED'].includes(result.reason);
 // Only provider error codes from this allowlist may enter logs, never provider text.
@@ -153,21 +162,13 @@ export class DeliveryQueue {
     return job;
   }
   async cancelRegistration(id) {
-    await this.db
-      .prepare(
-        "UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason='RegistrationRevoked',updated=? WHERE registration_id=? AND state IN ('queued','retrying','sending')",
-      )
-      .run(this.now(), id);
+    await cancelJobs(this.db, this.now(), 'RegistrationRevoked', 'registration_id=?', [id]);
   }
   async cancel(id) {
     const job = await this.get(id);
     if (!job) fail(404, 'Task not found');
     if (!['queued', 'retrying'].includes(job.state)) fail(409, 'Only waiting tasks can be cancelled');
-    await this.db
-      .prepare(
-        "UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason='OperatorCancelled',updated=? WHERE id=? AND state IN ('queued','retrying')",
-      )
-      .run(this.now(), id);
+    await cancelJobs(this.db, this.now(), 'OperatorCancelled', 'id=?', [id], ['queued', 'retrying']);
     return this.public(await this.get(id));
   }
   reserve() {
@@ -214,11 +215,7 @@ export class DeliveryQueue {
       !allows(entry, job.kind) ||
       !(await this.applications.capabilities(entry.app_id, entry.channel)).includes(job.kind)
     ) {
-      await this.db
-        .prepare(
-          "UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason='RegistrationExpired',updated=? WHERE id=?",
-        )
-        .run(this.now(), id);
+      await cancelJobs(this.db, this.now(), 'RegistrationExpired', 'id=?', [id], null);
       return await this.get(id);
     }
     try {
@@ -252,11 +249,7 @@ export class DeliveryQueue {
       const { fallback } = await this.applications.notifications(entry.app_id);
       if ((await this.get(id)).state !== 'sending' || !(await this.applications.current(entry))) return this.get(id);
       if (!(await this.applications.capabilities(entry.app_id, entry.channel)).includes(job.kind)) {
-        await this.db
-          .prepare(
-            "UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason='CapabilityDisabled',updated=? WHERE id=? AND state='sending'",
-          )
-          .run(this.now(), id);
+        await cancelJobs(this.db, this.now(), 'CapabilityDisabled', 'id=?', [id], ['sending']);
         return this.get(id);
       }
       if (this.access && !(await this.access.active(entry))) {

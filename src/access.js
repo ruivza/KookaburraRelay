@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { defaultApp, validID } from './applications.js';
 import { requestedKinds } from './notification.js';
 import { verifyApple, GoogleIntegrity, googleCredential } from './integrity.js';
+import { cancelJobs } from './delivery.js';
 import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
 export const accessDefaults = Object.freeze({
   requireTrustedServers: false,
@@ -14,10 +15,10 @@ export const accessDefaults = Object.freeze({
   certificateDigests: [],
   cloudProjectNumber: '',
 });
-export function registrationBinding(body) {
-  const channel = body.channel ?? 'apns',
-    platform = body.platform ?? 'ios',
-    appId = body.appId ?? defaultApp;
+// Field checks shared by registration and its integrity challenge. APNs tokens are compared lowercased.
+export function validateRegistration(body) {
+  const appId = body.appId ?? defaultApp,
+    channel = body.channel ?? 'apns';
   if (
     !validID(appId) ||
     !validID(body.deviceId) ||
@@ -25,11 +26,16 @@ export function registrationBinding(body) {
     !validID(body.nonce) ||
     body.nonce.length < 32 ||
     !['sandbox', 'production'].includes(body.environment) ||
-    !['apns', 'fcm'].includes(channel) ||
-    platform !== (channel === 'apns' ? 'ios' : 'android') ||
     typeof body.deviceToken !== 'string' ||
     !(channel === 'apns' ? /^[a-f0-9]{32,512}$/i : /^[A-Za-z0-9_:.-]{20,4096}$/).test(body.deviceToken)
   )
+    fail(400, 'Invalid registration');
+  return { appId, channel, deviceToken: channel === 'apns' ? body.deviceToken.toLowerCase() : body.deviceToken };
+}
+export function registrationBinding(body) {
+  const { appId, channel, deviceToken } = validateRegistration(body),
+    platform = body.platform ?? 'ios';
+  if (!['apns', 'fcm'].includes(channel) || platform !== (channel === 'apns' ? 'ios' : 'android'))
     fail(400, 'Invalid registration');
   const kinds = requestedKinds(body).slice().sort();
   return sha256Hex(
@@ -40,7 +46,7 @@ export function registrationBinding(body) {
       body.environment,
       body.deviceId,
       body.serverId,
-      channel === 'apns' ? body.deviceToken.toLowerCase() : body.deviceToken,
+      deviceToken,
       body.nonce,
       kinds,
       body.purpose ?? null,
@@ -152,11 +158,7 @@ export class AccessControl {
           'INSERT INTO access_policies VALUES(?,?,?,?) ON CONFLICT(app_id) DO UPDATE SET settings=excluded.settings,revision=excluded.revision,google_secret=excluded.google_secret',
         )
         .run(appId, JSON.stringify(settings), randomUUID(), encrypted);
-      await this.db
-        .prepare(
-          "UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason='AccessPolicyChanged',updated=? WHERE app_id=? AND state IN ('queued','retrying','sending')",
-        )
-        .run(this.now(), appId);
+      await cancelJobs(this.db, this.now(), 'AccessPolicyChanged', 'app_id=?', [appId]);
       await this.db.prepare('DELETE FROM registrations WHERE app_id=?').run(appId);
       await this.db.prepare('DELETE FROM integrity_keys WHERE app_id=?').run(appId);
       await this.db.prepare('DELETE FROM integrity_challenges WHERE app_id=?').run(appId);
@@ -205,11 +207,13 @@ export class AccessControl {
         .prepare('UPDATE trusted_servers SET state=?,credential_hash=?,revision=? WHERE id=?')
         .run(credential ? 'approved' : 'blocked', credential ? sha256Hex(credential) : null, randomUUID(), id);
       await this.db.prepare('DELETE FROM server_tickets WHERE server_id=?').run(id);
-      await this.db
-        .prepare(
-          "UPDATE delivery_jobs SET state='cancelled',notification=NULL,reason='ServerAccessChanged',updated=? WHERE registration_id IN (SELECT id FROM registrations WHERE server_id=?) AND state IN ('queued','retrying','sending')",
-        )
-        .run(this.now(), id);
+      await cancelJobs(
+        this.db,
+        this.now(),
+        'ServerAccessChanged',
+        'registration_id IN (SELECT id FROM registrations WHERE server_id=?)',
+        [id],
+      );
       await this.db.prepare('DELETE FROM registrations WHERE server_id=?').run(id);
     });
     return { id, state: credential ? 'approved' : 'blocked', ...(credential ? { credential } : {}) };
