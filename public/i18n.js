@@ -1,6 +1,7 @@
 // Only developer-authored strings and template literal segments are translated.
 // Values interpolated into html (application names, IDs, logs) remain untouched.
-const english = Object.fromEntries(`
+const english = Object.fromEntries(
+  `
 名称|Name
 接入与验证|Access and verification
 服务器接入|Server access
@@ -309,7 +310,6 @@ Android 通道|Android channels
 结果未知|Unknown outcome
 已取消|Cancelled
 会话已结束|Your session has ended.
-管理令牌不正确或已失效，请使用网关 admin.token 中的令牌。|The token is incorrect or expired. Use the token from the gateway’s admin.token file.
 请求失败，请稍后重试|The request failed. Please try again.
 请求超时，请刷新确认操作结果。|The request timed out. Refresh to check whether it completed.
 ↻ 刷新|Refresh
@@ -569,7 +569,6 @@ HTTP 状态|HTTP status
 清晰掌控。|Everything in view.
 管理应用与推送通道，查看投递记录。|Manage your applications, channels, and deliveries.
 让每一次连接，都有迹可循|Every connection, accounted for
-令牌保存在网关数据目录的 admin.token 文件中，与邮件服务器管理员密码不同。|Find your token in admin.token in the gateway data directory. This is separate from your mail server password.
 令牌仅保留在当前页面内存中。|Your token stays in this page’s memory only.
 通道接受不等于设备送达 · 运行记录保留 30 天|Provider acceptance is not device delivery · 30-day history
 推送网关|Push gateway
@@ -598,100 +597,124 @@ HTTP 状态|HTTP status
 返回登录|Back to sign in
 安全设置已更新，请重新登录。|Security settings updated. Please sign in again.
 登录已失效，请重新登录|Your session has expired. Please sign in again.
-`.trim().split('\n').map(line => { const at = line.indexOf('|'); return [line.slice(0, at), line.slice(at + 1)]; }));
+`
+    .trim()
+    .split('\n')
+    .map(line => {
+      const at = line.indexOf('|');
+      return [line.slice(0, at), line.slice(at + 1)];
+    }),
+);
 const escapeRegex = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const pattern = new RegExp(Object.keys(english).sort((a,b) => b.length - a.length).map(escapeRegex).join('|'), 'g');
+const pattern = new RegExp(
+  Object.keys(english)
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegex)
+    .join('|'),
+  'g',
+);
 export function translate(source, target) {
   return target === 'en' ? source.replace(pattern, match => english[match]) : source;
 }
 function initialLanguage() {
-  try { const saved = localStorage.getItem('perch.gateway.language'); if (['zh','en'].includes(saved)) return saved; } catch { /* Storage may be unavailable. */ }
+  try {
+    const saved = localStorage.getItem('perch.gateway.language');
+    if (['zh', 'en'].includes(saved)) return saved;
+  } catch {
+    /* Storage may be unavailable. */
+  }
   return typeof navigator !== 'undefined' && !navigator.language.toLowerCase().startsWith('zh') ? 'en' : 'zh';
 }
 export let language = initialLanguage();
-export const locale = () => language === 'zh' ? 'zh-CN' : 'en-US';
+export const locale = () => (language === 'zh' ? 'zh-CN' : 'en-US');
 export const t = source => translate(String(source), language);
 export function html(strings, ...values) {
   return strings.reduce((result, segment, i) => result + t(segment) + (i < values.length ? values[i] : ''), '');
 }
 export function setLanguage(next) {
-  if (!['zh','en'].includes(next)) return;
+  if (!['zh', 'en'].includes(next)) return;
   language = next;
-  try { localStorage.setItem('perch.gateway.language', next); } catch { /* Switching still works without storage. */ }
+  try {
+    localStorage.setItem('perch.gateway.language', next);
+  } catch {
+    /* Switching still works without storage. */
+  }
 }
 const errors = {
-"Invalid age public key":"请填写有效的 age 公钥，不要上传私钥",
-"Use an HTTPS S3 endpoint":"请填写 HTTPS S3 Endpoint，不含账号、路径或查询参数",
-"Invalid storage provider":"存储服务类型无效",
-"Use a Cloudflare R2 S3 endpoint":"请填写 Cloudflare R2 S3 Endpoint",
-"Use an AWS S3 endpoint":"请填写 AWS S3 Endpoint",
-"Invalid S3 region":"S3 Region 无效",
-"B2 region must match endpoint":"B2 Region 必须与 Endpoint 匹配",
-"R2 region must be auto":"R2 Region 必须为 auto",
-"Invalid S3 addressing style":"S3 寻址方式无效",
-"Invalid S3 bucket name":"S3 存储桶名称无效",
-"Invalid S3 Access Key ID":"S3 Access Key ID 无效",
-"Invalid S3 Secret Access Key":"S3 Secret Access Key 无效",
-"Enter a new Secret Access Key when changing the storage destination":"更换存储服务、目标或 Access Key ID 时，请重新填写 Secret Access Key",
-"S3 Secret Access Key is required":"请填写 S3 Secret Access Key",
-"Save storage credentials and public key first":"请先保存存储凭据和加密公钥",
-"Use a Backblaze B2 HTTPS S3 endpoint":"请填写 Backblaze B2 的 HTTPS S3 Endpoint",
-"Invalid B2 bucket name":"B2 存储桶名称无效",
-"Invalid backup prefix":"备份目录前缀无效",
-"Invalid B2 Key ID":"B2 Key ID 无效",
-"Invalid backup settings":"备份设置无效",
-"Invalid backup schedule":"备份间隔或保留天数无效",
-"Invalid B2 Application Key":"B2 Application Key 无效",
-"Backup settings changed; refresh and try again":"备份配置已变更，请刷新后重试",
-"Backup worker is busy; wait before changing settings":"备份正在执行，请完成后再修改配置",
-"Enter a new Application Key when changing the B2 destination":"修改 B2 目标或 Key ID 时，请重新填写 Application Key",
-"B2 Application Key is required":"请填写 B2 Application Key",
-"Save B2 credentials and public key first":"请先保存 B2 凭据和加密公钥",
-"A backup operation is already pending":"已有同类操作等待执行",
-"This backup cannot be retried":"此备份当前无法重试",
-"Backup target changed; create a new backup":"备份目标已改变，请创建新备份",
+  'Invalid age public key': '请填写有效的 age 公钥，不要上传私钥',
+  'Use an HTTPS S3 endpoint': '请填写 HTTPS S3 Endpoint，不含账号、路径或查询参数',
+  'Invalid storage provider': '存储服务类型无效',
+  'Use a Cloudflare R2 S3 endpoint': '请填写 Cloudflare R2 S3 Endpoint',
+  'Use an AWS S3 endpoint': '请填写 AWS S3 Endpoint',
+  'Invalid S3 region': 'S3 Region 无效',
+  'B2 region must match endpoint': 'B2 Region 必须与 Endpoint 匹配',
+  'R2 region must be auto': 'R2 Region 必须为 auto',
+  'Invalid S3 addressing style': 'S3 寻址方式无效',
+  'Invalid S3 bucket name': 'S3 存储桶名称无效',
+  'Invalid S3 Access Key ID': 'S3 Access Key ID 无效',
+  'Invalid S3 Secret Access Key': 'S3 Secret Access Key 无效',
+  'Enter a new Secret Access Key when changing the storage destination':
+    '更换存储服务、目标或 Access Key ID 时，请重新填写 Secret Access Key',
+  'S3 Secret Access Key is required': '请填写 S3 Secret Access Key',
+  'Save storage credentials and public key first': '请先保存存储凭据和加密公钥',
+  'Use a Backblaze B2 HTTPS S3 endpoint': '请填写 Backblaze B2 的 HTTPS S3 Endpoint',
+  'Invalid B2 bucket name': 'B2 存储桶名称无效',
+  'Invalid backup prefix': '备份目录前缀无效',
+  'Invalid B2 Key ID': 'B2 Key ID 无效',
+  'Invalid backup settings': '备份设置无效',
+  'Invalid backup schedule': '备份间隔或保留天数无效',
+  'Invalid B2 Application Key': 'B2 Application Key 无效',
+  'Backup settings changed; refresh and try again': '备份配置已变更，请刷新后重试',
+  'Backup worker is busy; wait before changing settings': '备份正在执行，请完成后再修改配置',
+  'Enter a new Application Key when changing the B2 destination':
+    '修改 B2 目标或 Key ID 时，请重新填写 Application Key',
+  'B2 Application Key is required': '请填写 B2 Application Key',
+  'Save B2 credentials and public key first': '请先保存 B2 凭据和加密公钥',
+  'A backup operation is already pending': '已有同类操作等待执行',
+  'This backup cannot be retried': '此备份当前无法重试',
+  'Backup target changed; create a new backup': '备份目标已改变，请创建新备份',
 
-  'Invalid retention settings':'保留周期无效，请检查输入范围',
-  'Invalid cleanup selection':'请选择至少一种清理类型',
-  'Invalid cleanup cutoff':'截止日期无效或晚于当前时间',
-  'Cleanup preview expired; preview again':'预览已过期，请关闭弹窗后重新预览',
-  'Cleanup is already running':'清理正在运行，请稍后再试',
-  'Invalid or already used verification code':'验证码无效或已使用，请使用新的验证码或恢复码',
-  'Invalid current token':'当前管理令牌不正确',
-  'New token must contain 32–256 characters without spaces':'新令牌须为 32–256 位无空格字符',
-  'New token must differ from current token':'新令牌不能与当前令牌相同',
-  'Two-step verification is already enabled':'两步验证已经启用',
-  'Setup expired; start again':'绑定已过期，请重新开始',
+  'Invalid retention settings': '保留周期无效，请检查输入范围',
+  'Invalid cleanup selection': '请选择至少一种清理类型',
+  'Invalid cleanup cutoff': '截止日期无效或晚于当前时间',
+  'Cleanup preview expired; preview again': '预览已过期，请关闭弹窗后重新预览',
+  'Cleanup is already running': '清理正在运行，请稍后再试',
+  'Invalid or already used verification code': '验证码无效或已使用，请使用新的验证码或恢复码',
+  'Invalid current token': '当前管理令牌不正确',
+  'New token must contain 32–256 characters without spaces': '新令牌须为 32–256 位无空格字符',
+  'New token must differ from current token': '新令牌不能与当前令牌相同',
+  'Two-step verification is already enabled': '两步验证已经启用',
+  'Setup expired; start again': '绑定已过期，请重新开始',
 
-  'Application ID already exists':'应用 ID 已存在',
-  'Invalid application ID or name':'应用 ID 或名称无效',
-  'Invalid application settings':'应用配置无效',
-  'Application not found':'应用不存在',
-  'Invalid APNs configuration':'APNs 配置无效',
-  'Invalid P-256 private key':'请上传有效的 P-256 私钥',
-  'Invalid RSA private key':'请上传有效的 RSA 私钥',
-  'Invalid FCM service account':'FCM 服务账号无效',
-  'Invalid service account JSON':'服务账号 JSON 无效',
-  'Apple topic and environment already assigned':'该 Apple Bundle ID 与环境已分配给其他应用',
-  'Firebase project already assigned':'该 Firebase 项目已分配给其他应用',
-  'Invalid channel state':'通道状态无效',
-  'Invalid channel configuration':'通道配置无效',
-  'Push channel not implemented':'该推送通道尚未接入',
-  'Application disabled':'应用已停用',
-  'Application channel not configured or disabled':'应用通道未配置或已停用',
-  'Device rate limit':'设备请求过于频繁，请稍后重试',
-  'Too many requests':'请求过于频繁，请稍后重试',
-  'Queue capacity reached':'队列已满，请稍后重试',
-  'Gateway shutting down':'网关正在停止，请稍后重试',
-  'Workers busy':'发送服务繁忙，请稍后重试',
-  'Task not found':'任务不存在',
-  'Registration not found':'设备登记不存在或已过期',
-  'Device has not completed verification':'设备尚未完成验证',
-  'Only waiting tasks can be cancelled':'只能取消等待发送或重试的任务',
-  'Gateway request failed':'网关请求失败，请稍后重试',
-  'Unauthorized':'登录已失效，请重新登录',
-  'Request too large':'请求内容过大',
-  'Invalid page':'页码无效',
-  'Invalid date filter':'时间筛选无效',
+  'Application ID already exists': '应用 ID 已存在',
+  'Invalid application ID or name': '应用 ID 或名称无效',
+  'Invalid application settings': '应用配置无效',
+  'Application not found': '应用不存在',
+  'Invalid APNs configuration': 'APNs 配置无效',
+  'Invalid P-256 private key': '请上传有效的 P-256 私钥',
+  'Invalid RSA private key': '请上传有效的 RSA 私钥',
+  'Invalid FCM service account': 'FCM 服务账号无效',
+  'Invalid service account JSON': '服务账号 JSON 无效',
+  'Apple topic and environment already assigned': '该 Apple Bundle ID 与环境已分配给其他应用',
+  'Firebase project already assigned': '该 Firebase 项目已分配给其他应用',
+  'Invalid channel state': '通道状态无效',
+  'Invalid channel configuration': '通道配置无效',
+  'Push channel not implemented': '该推送通道尚未接入',
+  'Application disabled': '应用已停用',
+  'Application channel not configured or disabled': '应用通道未配置或已停用',
+  'Device rate limit': '设备请求过于频繁，请稍后重试',
+  'Too many requests': '请求过于频繁，请稍后重试',
+  'Queue capacity reached': '队列已满，请稍后重试',
+  'Gateway shutting down': '网关正在停止，请稍后重试',
+  'Workers busy': '发送服务繁忙，请稍后重试',
+  'Task not found': '任务不存在',
+  'Registration not found': '设备登记不存在或已过期',
+  'Device has not completed verification': '设备尚未完成验证',
+  'Only waiting tasks can be cancelled': '只能取消等待发送或重试的任务',
+  'Gateway request failed': '网关请求失败，请稍后重试',
+  Unauthorized: '登录已失效，请重新登录',
+  'Request too large': '请求内容过大',
+  'Invalid page': '页码无效',
+  'Invalid date filter': '时间筛选无效',
 };
-export const translateError = message => language === 'zh' ? (errors[message] || message) : t(message);
+export const translateError = message => (language === 'zh' ? errors[message] || message : t(message));

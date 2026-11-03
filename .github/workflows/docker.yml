@@ -44,6 +44,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y age
       - run: npm ci --ignore-scripts
       - run: npm run check
+      - run: npm run lint
+      - run: npm run format:check
       - run: for file in install.sh ops/*.sh ops/postgres-init/*.sh scripts/*.sh; do sh -n "$file"; done
       - run: npm audit --omit=dev --audit-level=high
       - name: Scan Git history for secrets
