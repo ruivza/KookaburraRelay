@@ -32,7 +32,9 @@ export function publicRoutes({ applications, access, monitor, backups, scheduler
       const { ready, kinds } = await applications.publicStatus(appId, query.get('channel') || 'apns');
       return {
         value: {
+          // protocol stays the default for 0.x clients; protocols lists what registrations may ask for.
           protocol: 1,
+          protocols: [1, 2],
           appId,
           ready,
           notificationEncryption: kinds.includes('encrypted_alert') ? notificationAlgorithm : null,

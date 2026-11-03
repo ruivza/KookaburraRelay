@@ -166,14 +166,9 @@ export async function createGateway({
     const { seal, open } = await loadEncryption(db, dataDir);
     const adminPath = resolve(dataDir, 'admin.token');
     if (adminToken && adminToken.length < 32) throw Error('Gateway admin token must be at least 32 characters');
-    if (!(await db.prepare('SELECT 1 FROM schema_migrations WHERE version=2').get())) {
-      await db.transaction(async () => {
-        await db
-          .prepare('INSERT INTO applications(id,name,enabled,revision) VALUES(?,?,1,?) ON CONFLICT DO NOTHING')
-          .run(defaultApp, 'Perch Mail', randomUUID());
-        await db.exec('INSERT INTO schema_migrations VALUES(2) ON CONFLICT DO NOTHING');
-      });
-    }
+    // Version 2 marks a gateway whose master key is bound. Before 0.3.0 the first start also created the default
+    // perch-mail application, which those installations keep; new ones create applications in the console.
+    await db.exec('INSERT INTO schema_migrations VALUES(2) ON CONFLICT DO NOTHING');
     const security = new Security({ db, seal, open, now, adminPath });
     await security.initialize(adminToken);
     const backups = new Backups({ db, seal, open, security, now });

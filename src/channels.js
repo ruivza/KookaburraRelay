@@ -58,17 +58,26 @@ export class APNsChannel {
         return Promise.resolve({ status: 400, reason: 'PayloadTooLarge' });
       return this.provider.send({ id: target.device_id, push_environment: target.environment }, token, payload);
     }
+    // Protocol 2 uses relay names for the enrollment proof and the sync hint; protocol 1 keeps the perch names.
     const payload =
       message.kind === 'challenge'
-        ? { aps: { 'content-available': 1 }, perchRegistration: message.proof }
-        : {
+        ? {
             aps: { 'content-available': 1 },
-            perch: {
-              version: 1,
-              deviceId: target.device_id,
-              appId: target.app_id,
-            },
-          };
+            [target.protocol === 2 ? 'relayRegistration' : 'perchRegistration']: message.proof,
+          }
+        : target.protocol === 2
+          ? {
+              aps: { 'content-available': 1 },
+              relay: { version: 2, kind: 'sync', deviceId: target.device_id, appId: target.app_id },
+            }
+          : {
+              aps: { 'content-available': 1 },
+              perch: {
+                version: 1,
+                deviceId: target.device_id,
+                appId: target.app_id,
+              },
+            };
     return this.provider.send({ id: target.device_id, push_environment: target.environment }, token, payload);
   }
   close() {

@@ -241,6 +241,7 @@ async function run(scenario, { options, url, pg, createGateway, counter, observe
     const base = `http://127.0.0.1:${gateway.server.address().port}`;
     const appId = 'perch-mail',
       serverId = 'bench-server';
+    await gateway.applications.create({ id: appId, name: 'Benchmark' });
     await gateway.applications.update(appId, {
       name: 'Benchmark',
       enabled: true,

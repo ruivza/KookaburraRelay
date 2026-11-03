@@ -17,10 +17,14 @@ export const accessDefaults = Object.freeze({
   cloudProjectNumber: '',
 });
 // Field checks shared by registration and its integrity challenge. APNs tokens are compared lowercased.
+// Protocol 2 registrations name their application; protocol 1 may omit it for the default application.
 export function validateRegistration(body) {
   const appId = body.appId ?? defaultApp,
-    channel = body.channel ?? 'apns';
+    channel = body.channel ?? 'apns',
+    protocol = body.protocol ?? 1;
   if (
+    ![1, 2].includes(protocol) ||
+    (protocol === 2 && body.appId === undefined) ||
     !validID(appId) ||
     !validID(body.deviceId) ||
     !validID(body.serverId) ||
@@ -31,7 +35,12 @@ export function validateRegistration(body) {
     !(channel === 'apns' ? /^[a-f0-9]{32,512}$/i : /^[A-Za-z0-9_:.-]{20,4096}$/).test(body.deviceToken)
   )
     fail(400, 'Invalid registration');
-  return { appId, channel, deviceToken: channel === 'apns' ? body.deviceToken.toLowerCase() : body.deviceToken };
+  return {
+    appId,
+    channel,
+    protocol,
+    deviceToken: channel === 'apns' ? body.deviceToken.toLowerCase() : body.deviceToken,
+  };
 }
 export function registrationBinding(body) {
   const { appId, channel, deviceToken } = validateRegistration(body),

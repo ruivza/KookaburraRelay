@@ -29,9 +29,11 @@ export class FCMChannel {
     if (!['challenge', 'sync', 'alert'].includes(message.kind)) return { status: 400, reason: 'UnsupportedMessage' };
     try {
       const access = await this.authorization();
+      // Protocol 2 registrations get relay names for the enrollment proof and sync hint.
+      const relay = target.protocol === 2;
       const data =
         message.kind === 'challenge'
-          ? { perchRegistration: JSON.stringify(message.proof) }
+          ? { [relay ? 'relayRegistration' : 'perchRegistration']: JSON.stringify(message.proof) }
           : message.kind === 'alert'
             ? {
                 relay: JSON.stringify({
@@ -42,7 +44,11 @@ export class FCMChannel {
                   kind: 'alert',
                 }),
               }
-            : { perch: JSON.stringify({ version: 1, deviceId: target.device_id, appId: target.app_id }) };
+            : relay
+              ? {
+                  relay: JSON.stringify({ version: 2, kind: 'sync', deviceId: target.device_id, appId: target.app_id }),
+                }
+              : { perch: JSON.stringify({ version: 1, deviceId: target.device_id, appId: target.app_id }) };
       const { response, text } = await boundedFetch(
         this.fetcher,
         `https://fcm.googleapis.com/v1/projects/${this.config.projectId}/messages:send`,
@@ -62,10 +68,14 @@ export class FCMChannel {
                 ttl: message.kind === 'challenge' ? '300s' : '3600s',
                 collapse_key:
                   message.kind === 'challenge'
-                    ? 'perch-enroll'
+                    ? relay
+                      ? 'relay-enroll'
+                      : 'perch-enroll'
                     : message.kind === 'alert'
                       ? 'relay-alert'
-                      : 'perch-sync',
+                      : relay
+                        ? 'relay-sync'
+                        : 'perch-sync',
               },
             },
           }),

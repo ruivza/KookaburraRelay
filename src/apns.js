@@ -31,7 +31,8 @@ export class APNsProvider {
       perch: { version: 1, deviceId: device.id },
     },
   ) {
-    const environment = device.push_environment;
+    const environment = device.push_environment,
+      enrollment = payload.relayRegistration ?? payload.perchRegistration;
     if (!['sandbox', 'production'].includes(environment) || !/^[a-f0-9]{32,512}$/i.test(token))
       return { status: 400, reason: 'BadDeviceToken' };
     let session = this.sessions.get(environment);
@@ -57,12 +58,12 @@ export class APNsProvider {
         'apns-topic': this.configuration.topic,
         'apns-push-type': payload.aps?.alert ? 'alert' : 'background',
         'apns-priority': payload.aps?.alert ? '10' : '5',
-        'apns-collapse-id': payload.perchRegistration
-          ? 'perch-enroll-' + payload.perchRegistration.id
-          : payload.aps?.alert
+        'apns-collapse-id': enrollment
+          ? (payload.relayRegistration ? 'relay-enroll-' : 'perch-enroll-') + enrollment.id
+          : payload.aps?.alert || payload.relay
             ? 'relay-' + (payload.relay?.kind || 'alert')
             : 'perch-mail-sync',
-        'apns-expiration': String(Math.floor(this.now() / 1000) + (payload.perchRegistration ? 300 : 3600)),
+        'apns-expiration': String(Math.floor(this.now() / 1000) + (enrollment ? 300 : 3600)),
       });
       const timer = setTimeout(() => request.destroy(Error('APNs request timed out')), 10000);
       request.on('response', headers => {

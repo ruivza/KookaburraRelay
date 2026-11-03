@@ -27,6 +27,7 @@ const app = await createGateway({
     close() {},
   }),
 });
+await app.applications.create({ id: 'perch-mail', name: 'Perch Mail' });
 await app.applications.update('perch-mail', {
   name: 'Perch Mail',
   enabled: true,
