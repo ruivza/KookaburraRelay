@@ -1,67 +1,112 @@
 # Kookaburra Relay
 
-Independent APNs / FCM push gateway with a bilingual admin console, scoped device credentials, PostgreSQL delivery queues, optional App Attest / Play Integrity verification, monitoring, and encrypted remote backups. No mail server or client application is required to run the gateway.
+[![CI](https://github.com/ruivza/KookaburraRelay/actions/workflows/docker.yml/badge.svg)](https://github.com/ruivza/KookaburraRelay/actions/workflows/docker.yml)
+[![Release](https://img.shields.io/github/v/release/ruivza/KookaburraRelay)](https://github.com/ruivza/KookaburraRelay/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node.js 24+](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](package.json)
 
-| Notification | APNs | FCM |
+Self-hosted push gateway for APNs and FCM. A single service accepts delivery requests from your backend, queues them in PostgreSQL, and forwards them to Apple and Google. Administration happens in a built-in web console (English and Chinese).
+
+## Features
+
+- **APNs and FCM** delivery with per-application credentials and a PostgreSQL-backed queue
+- **Scoped credentials**: business servers get delivery tokens, never admin tokens or vendor private keys
+- **Device registration** by challenge confirmed over the push channel
+- **Optional integrity checks**: App Attest, Play Integrity, and server approval
+- **Encrypted alerts** on APNs: the gateway routes opaque envelopes without reading them
+- **Admin console** with two-factor authentication, monitoring, quotas, alert webhooks, and audit log
+- **Encrypted backups** to local disk or S3-compatible storage, with restore verification
+- **Hardened Compose deployment**: read-only root filesystem, dropped capabilities, non-superuser database role
+
+| Notification kind | APNs | FCM |
 | --- | --- | --- |
-| `sync`: background update hint | Yes | Yes |
-| `alert`: title, body, optional sound | Yes | Yes |
-| `encrypted_alert`: encrypted envelope and fallback alert | Yes | Not implemented |
+| `sync` (background update hint) | Yes | Yes |
+| `alert` (title, body, optional sound) | Yes | Yes |
+| `encrypted_alert` (encrypted envelope with fallback alert) | Yes | No |
 
-New applications enable only `sync`. Existing credentials do not gain permissions when more notification kinds are enabled. Vendor acceptance does not prove device delivery. This repository does not include mobile clients.
+New applications start with only `sync` enabled. Mobile client libraries are not part of this repository.
 
 ## Quick start
 
-Requires Docker Engine and Docker Compose.
+Requires Docker Engine with Compose.
 
 ```sh
+git clone https://github.com/ruivza/KookaburraRelay.git
+cd KookaburraRelay
 ./install.sh
 ```
 
-When `.env` is absent, the installer generates random passwords for the PostgreSQL superuser and for the separate non-superuser role used by the gateway and backup worker, then starts the gateway, database, and backup worker. For an existing `.env`, set `POSTGRES_PASSWORD`; see [.env.example](.env.example). Installations whose `.env` has no `GATEWAY_DB_USER` keep using the superuser until [migrated](docs/OPERATIONS.md#database-roles).
-
-Open [http://127.0.0.1:3220](http://127.0.0.1:3220) and read the initial admin token locally:
+The installer writes a `.env` with random database passwords on first run, then starts the gateway, PostgreSQL, and the backup worker. Open <http://127.0.0.1:3220> and sign in with the initial admin token:
 
 ```sh
 docker compose exec gateway cat /app/data/admin.token
 ```
 
-Create an application, configure its APNs or FCM credentials, and enable the required notification kinds. Enable administrator two-factor authentication in Security. Keep credentials, database dumps, and backups private.
+Then create an application, add its APNs or FCM credentials, enable the notification kinds it needs, and turn on two-factor authentication under **Security**.
 
-Update from source with `docker compose up -d --build --wait`. Back up PostgreSQL, the gateway data volume, and configuration together. `docker compose down -v` deletes stored data. Losing `master.key` makes existing encrypted data unrecoverable.
+Prebuilt images and installation archives for `linux/amd64` and `linux/arm64` are attached to each [release](https://github.com/ruivza/KookaburraRelay/releases); see [prebuilt installation](docs/OPERATIONS.md#prebuilt-installation).
 
-## Run without Docker
+### Upgrading
 
-Requires Node.js 24+ and PostgreSQL; Compose and CI use PostgreSQL 18.
+```sh
+git pull
+docker compose up -d --build --wait
+```
+
+Back up PostgreSQL, the gateway data volume, and `.env` together. `docker compose down -v` deletes all data, and a lost `master.key` makes encrypted data unrecoverable.
+
+## Running without Docker
+
+Requires Node.js 24+ and PostgreSQL (CI uses PostgreSQL 18).
 
 ```sh
 npm ci
 export GATEWAY_DATABASE_URL='postgresql://relay:replace-me@127.0.0.1:5432/relay'
-export GATEWAY_DATABASE_SCHEMA=relay   # the backup worker must use the same value
+export GATEWAY_DATABASE_SCHEMA=relay
 npm start
 ```
 
-Use a dedicated database and a non-superuser account that owns the schema and holds `CREATE` on the database. The service initializes its schema on startup and listens on `127.0.0.1:3220` by default. See [configuration and operations](docs/OPERATIONS.md).
+Use a dedicated database and a non-superuser role that owns the schema and has `CREATE` on the database. The schema is created on startup. The service listens on `127.0.0.1:3220` by default. One gateway instance per schema.
 
-## Deployment
+## Configuration
 
-Use an HTTPS reverse proxy for public access and restrict management routes. Configure `GATEWAY_TRUSTED_PROXIES` with the actual proxy addresses only. One gateway instance may use each database schema.
+All settings are environment variables. [.env.example](.env.example) lists the Compose defaults; the full reference is in [docs/OPERATIONS.md](docs/OPERATIONS.md#configuration).
 
-Devices register by confirming a challenge received through APNs / FCM. Business servers receive scoped delivery credentials, never administrator tokens or vendor private keys. App Attest, Play Integrity, and server approval are optional policies and require compatible integrations.
+For public access, put the gateway behind an HTTPS reverse proxy, restrict the management routes, and set `GATEWAY_TRUSTED_PROXIES` to the proxy's exact addresses.
+
+## Development
+
+```sh
+npm ci
+npm run check
+npm run lint
+npm run typecheck
+npm run format:check
+GATEWAY_DATABASE_URL='postgresql://relay_test:replace-me@127.0.0.1:5432/relay_test' npm test
+```
+
+Or run the same checks in throwaway containers with only Docker installed:
+
+```sh
+sh scripts/test-docker.sh
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the code map and review requirements.
 
 ## Documentation
 
 - [Notification and registration protocol](docs/NOTIFICATION_PROTOCOL.md)
+- [Encrypted notifications](docs/ENCRYPTED_NOTIFICATIONS.md)
 - [Application integrity, server approval, quotas, and alerts](docs/ACCESS_SECURITY.md)
-- [Operations, monitoring, and backup recovery](docs/OPERATIONS.md)
+- [Operations: configuration, monitoring, backup and recovery](docs/OPERATIONS.md)
+- [Performance baseline](docs/PERFORMANCE.md)
 - [Real-device validation](docs/REAL_DEVICE_TESTING.md)
-- [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Changelog](CHANGELOG.md)
-- [Release review](docs/REVIEW.md)
+- [Changelog](CHANGELOG.md)
 
-GitHub Actions tests and builds gateway and backup images for `linux/amd64` and `linux/arm64`. See the [workflow](.github/workflows/docker.yml); publication status is determined by its run results.
+## Security
 
-Releases include source archives and Docker installation archives for both platforms. See [prebuilt installation](docs/OPERATIONS.md#prebuilt-installation). GHCR images are also published; their visibility is configured separately on GitHub.
+Report vulnerabilities as described in [SECURITY.md](SECURITY.md). Do not open public issues for security problems.
 
 ## License
 
-Code and bundled project assets are licensed under the [MIT License](LICENSE). The license does not imply endorsement of derivative projects by the original authors. Third-party dependencies retain their own licenses.
+[MIT](LICENSE). Third-party dependencies are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
