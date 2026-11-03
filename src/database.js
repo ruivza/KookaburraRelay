@@ -8,19 +8,28 @@ pg.types.setTypeParser(20, value => {
   return n;
 });
 export class Database {
-  constructor(url, schema = 'public') {
+  constructor(url, schema = 'public', { poolSize = 20 } = {}) {
     if (!url) throw Error('GATEWAY_DATABASE_URL is required');
     if (!/^[a-z_][a-z0-9_]*$/.test(schema)) throw Error('Invalid database schema');
+    if (!Number.isInteger(poolSize) || poolSize < 2 || poolSize > 200) throw Error('Invalid database pool size');
     this.schema = schema;
     this.context = new AsyncLocalStorage();
-    this.pool = new pg.Pool({
+    this.settings = {
       connectionString: url,
-      max: 10,
       connectionTimeoutMillis: 5000,
       statement_timeout: 15000,
       options: `-c search_path=${schema}`,
-    });
+    };
+    this.pool = new pg.Pool({ ...this.settings, max: poolSize });
     this.pool.on('error', () => console.error('PostgreSQL connection interrupted'));
+  }
+  // A connection outside the pool for session-long locks and long background work, which would otherwise
+  // hold a pool slot. The caller ends it.
+  async dedicated() {
+    const client = new pg.Client(this.settings);
+    client.on('error', () => console.error('PostgreSQL connection interrupted'));
+    await client.connect();
+    return client;
   }
   async query(sql, values = []) {
     return (this.context.getStore()?.client || this.pool).query(sql, values);

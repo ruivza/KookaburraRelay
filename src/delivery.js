@@ -36,13 +36,26 @@ const safeReasons = new Set([
   'NetworkError',
 ]);
 export class DeliveryQueue {
-  constructor({ db, applications, open, seal, now = Date.now, autoStart = true, concurrency = 4, abuse, access }) {
-    Object.assign(this, { db, applications, open, seal, now, concurrency, abuse, access });
+  constructor({
+    db,
+    applications,
+    open,
+    seal,
+    now = Date.now,
+    autoStart = true,
+    concurrency = 32,
+    legacyConcurrency = 4,
+    abuse,
+    access,
+  }) {
+    Object.assign(this, { db, applications, open, seal, now, concurrency, legacyConcurrency, abuse, access });
     this.active = new Map();
     this.failures = 0;
     this.lastSuccessAt = null;
     this.lastErrorAt = null;
+    // Async workers and legacy calls have separate slots, so neither can starve the other.
     this.slots = new Set();
+    this.legacySlots = new Set();
     if (autoStart) this.start();
   }
   start() {
@@ -175,9 +188,10 @@ export class DeliveryQueue {
     await cancelJobs(this.db, this.now(), 'OperatorCancelled', 'id=?', [id], ['queued', 'retrying']);
     return this.public(await this.get(id));
   }
-  reserve() {
+  reserve(legacy = false) {
+    const slots = legacy ? this.legacySlots : this.slots;
     if (this.stopping) fail(503, 'Gateway shutting down');
-    if (this.slots.size >= this.concurrency) fail(503, 'Workers busy');
+    if (slots.size >= (legacy ? this.legacyConcurrency : this.concurrency)) fail(503, 'Workers busy');
     let finish;
     const slot = {
       done: new Promise(resolve => {
@@ -185,12 +199,12 @@ export class DeliveryQueue {
       }),
     };
     slot.release = () => {
-      if (this.slots.delete(slot)) {
+      if (slots.delete(slot)) {
         finish();
-        if (this.timer && !this.flushing) this.wake();
+        if (!legacy && this.timer && !this.flushing) this.wake();
       }
     };
-    this.slots.add(slot);
+    slots.add(slot);
     return slot;
   }
   async execute(id, reserved) {
@@ -316,9 +330,8 @@ export class DeliveryQueue {
   }
   async legacy(entry, kind = 'sync', notification, alert) {
     // Legacy callers own retries. Never background-retry a failed legacy call.
-    // Reserve synchronously, before the first database await. Async workers use
-    // the same slots, so an admitted legacy task always has an executor.
-    const slot = this.reserve();
+    // Reserve synchronously, before the first database await, so an admitted legacy task always has an executor.
+    const slot = this.reserve(true);
     try {
       const job = await this.enqueue(entry, { mode: 'legacy', kind, notification, alert });
       return await this.execute(job.id, slot);
@@ -355,7 +368,7 @@ export class DeliveryQueue {
             )
             .all(this.now(), ...active, capacity);
           for (const job of jobs) {
-            // Legacy admission can consume slots while the query is running.
+            // Slots can fill while the query is running.
             if (this.stopping || this.slots.size >= this.concurrency) break;
             const work = this.execute(job.id);
             pending.add(work);
@@ -393,6 +406,6 @@ export class DeliveryQueue {
     clearInterval(this.timer);
     this.resumeWake?.();
     await this.flushing;
-    await Promise.allSettled([...this.slots].map(slot => slot.done));
+    await Promise.allSettled([...this.slots, ...this.legacySlots].map(slot => slot.done));
   }
 }

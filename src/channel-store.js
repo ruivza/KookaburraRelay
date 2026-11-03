@@ -23,8 +23,10 @@ export class ChannelStore {
     return !!(await this.cached(id, kind))?.enabled;
   }
   async describe(id, kind) {
-    const row = await this.row(id, kind),
-      c = row ? JSON.parse(this.open(row.secret)) : {};
+    return this.present(kind, await this.row(id, kind));
+  }
+  present(kind, row) {
+    const c = row ? JSON.parse(this.open(row.secret)) : {};
     return {
       kind,
       enabled: !!row?.enabled,

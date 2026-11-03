@@ -23,6 +23,8 @@ GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.3` and `ghcr.io/ruivza/ko
 | `GATEWAY_DATA_DIR` | Master key and initial admin / monitor tokens; defaults to repository-root `data/` |
 | `GATEWAY_ADMIN_TOKEN` | Optional initial administrator token, at least 32 characters |
 | `GATEWAY_TRUSTED_PROXIES` | Comma-separated verified proxy IP addresses / CIDRs |
+| `GATEWAY_DATABASE_POOL_SIZE` | PostgreSQL connections for requests and delivery; default 20, from 2 to 200. The ownership lock and cleanup use their own connections |
+| `GATEWAY_DELIVERY_WORKERS` | Concurrent background deliveries; default 32, from 1 to 256. Legacy synchronous sends have 4 separate slots |
 | `POSTGRES_PASSWORD` | Required Compose database superuser password |
 | `GATEWAY_DB_USER`, `GATEWAY_DB_PASSWORD` | Compose non-superuser role for the gateway and backup worker; see [database roles](#database-roles) |
 | `GATEWAY_BIND` | Compose host bind address; defaults to `127.0.0.1` |

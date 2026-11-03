@@ -8,6 +8,9 @@ import { fail } from './util.js';
 
 export const defaultApp = 'perch-mail';
 export const validID = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value);
+const jobCounts = `SELECT app_id,count(*) FILTER (WHERE state='accepted') accepted,
+  count(*) FILTER (WHERE state IN ('failed','unknown')) failed FROM delivery_jobs`;
+const activeRegistrations = 'SELECT app_id,count(*) n FROM registrations WHERE delivery_hash IS NOT NULL AND expires>?';
 
 export class Applications {
   constructor({ db, seal, open, providerFactory, fcmFactory, now = Date.now, cache = new ConfigCache(db) }) {
@@ -38,31 +41,32 @@ export class Applications {
     return row;
   }
   async describe(id) {
-    const row = await this.row(id),
-      apns = await this.channels.describe(id, 'apns'),
-      fcm = await this.channels.describe(id, 'fcm');
-    const counts = await this.db
-      .prepare(
-        `SELECT
-      coalesce(sum(CASE WHEN state='accepted' THEN 1 ELSE 0 END),0) accepted, coalesce(sum(CASE WHEN state IN ('failed','unknown') THEN 1 ELSE 0 END),0) failed
-      FROM delivery_jobs WHERE app_id=?`,
-      )
-      .get(id);
+    const row = await this.row(id);
+    const [channels, counts, registrations] = await Promise.all([
+      this.db.prepare('SELECT * FROM app_channels WHERE app_id=?').all(id),
+      this.db.prepare(jobCounts + ' WHERE app_id=? GROUP BY app_id').all(id),
+      this.db.prepare(activeRegistrations + ' AND app_id=? GROUP BY app_id').all(this.now(), id),
+    ]);
+    return this.present(row, channels, counts[0], registrations[0]);
+  }
+  async present(row, channels, counts, registrations) {
+    const [apns, fcm] = ['apns', 'fcm'].map(kind =>
+      this.channels.present(
+        kind,
+        channels.find(c => c.kind === kind),
+      ),
+    );
     return {
-      id,
-      notifications: await this.notifications(id),
+      id: row.id,
+      notifications: await this.notifications(row.id),
       name: row.name,
       enabled: !!row.enabled,
       revision: row.revision,
       ready: !!row.enabled && [apns, fcm].some(c => c.hasKey && c.enabled),
       apns,
       fcm,
-      counts,
-      registrations: (
-        await this.db
-          .prepare('SELECT count(*) n FROM registrations WHERE app_id=? AND delivery_hash IS NOT NULL AND expires>?')
-          .get(id, this.now())
-      ).n,
+      counts: { accepted: counts?.accepted ?? 0, failed: counts?.failed ?? 0 },
+      registrations: registrations?.n ?? 0,
     };
   }
 
@@ -89,9 +93,27 @@ export class Applications {
     const config = await this.notifications(id);
     return config.kinds.filter(k => channelCatalog.find(c => c.id === channel)?.kinds.includes(k));
   }
+  // Four queries for any number of applications.
   async list() {
-    const rows = await this.db.prepare('SELECT id FROM applications ORDER BY name,id').all();
-    return Promise.all(rows.map(row => this.describe(row.id)));
+    const [rows, channels, counts, registrations] = await Promise.all([
+      this.db.prepare('SELECT * FROM applications ORDER BY name,id').all(),
+      this.db.prepare('SELECT * FROM app_channels').all(),
+      this.db.prepare(jobCounts + ' GROUP BY app_id').all(),
+      this.db.prepare(activeRegistrations + ' GROUP BY app_id').all(this.now()),
+    ]);
+    const byApp = list => new Map(list.map(entry => [entry.app_id, entry]));
+    const countsBy = byApp(counts),
+      registrationsBy = byApp(registrations);
+    return Promise.all(
+      rows.map(row =>
+        this.present(
+          row,
+          channels.filter(c => c.app_id === row.id),
+          countsBy.get(row.id),
+          registrationsBy.get(row.id),
+        ),
+      ),
+    );
   }
   async create(body) {
     const notifications = notificationSettings(body.notifications);

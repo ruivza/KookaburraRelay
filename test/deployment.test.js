@@ -342,6 +342,9 @@ test(
           const response=await fetch(base+path);
           assert.equal(response.status,200,path);
           assert.deepEqual(Buffer.from(await response.arrayBuffer()),readFileSync(root+'/public/'+file),path);
+          const revalidated=await fetch(base+path,{headers:{'If-None-Match':response.headers.get('etag')}});
+          assert.equal(revalidated.status,304,path);
+          assert.ok(response.headers.get('cache-control'),path);
         }
         for(const path of ['/src/server.js','/server.js','/schema.sql','/.env','/data/master.key','/public/admin.js'])assert.equal((await fetch(base+path)).status,404,path);
         console.log(JSON.stringify({staticFiles:Object.keys(files).length,defaultDataDirectory:root+'/data'}));

@@ -134,7 +134,8 @@ export class Maintenance {
     let client,
       locked = false;
     try {
-      client = await this.db.pool.connect();
+      // Cleanup can run for minutes; its session lock and statements stay off the request pool.
+      client = await this.db.dedicated();
       const lock = await client.query('SELECT pg_try_advisory_lock(hashtext(current_schema()),72841105) locked');
       locked = lock.rows[0].locked;
       if (!locked) fail(409, 'Cleanup is already running');
@@ -151,7 +152,7 @@ export class Maintenance {
       return { id, status: 'running' };
     } catch (error) {
       if (locked) await client.query('SELECT pg_advisory_unlock(hashtext(current_schema()),72841105)').catch(() => {});
-      client?.release();
+      await client?.end().catch(() => {});
       this.busy = false;
       throw error;
     }
@@ -199,7 +200,7 @@ export class Maintenance {
         .catch(() => {});
     } finally {
       await client.query('SELECT pg_advisory_unlock(hashtext(current_schema()),72841105)').catch(() => {});
-      client.release();
+      await client.end().catch(() => {});
     }
   }
   async close() {
