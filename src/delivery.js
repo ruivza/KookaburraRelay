@@ -36,13 +36,26 @@ const safeReasons = new Set([
   'NetworkError',
 ]);
 export class DeliveryQueue {
-  constructor({ db, applications, open, seal, now = Date.now, autoStart = true, concurrency = 4, abuse, access }) {
-    Object.assign(this, { db, applications, open, seal, now, concurrency, abuse, access });
+  constructor({
+    db,
+    applications,
+    open,
+    seal,
+    now = Date.now,
+    autoStart = true,
+    concurrency = 32,
+    legacyConcurrency = 4,
+    abuse,
+    access,
+  }) {
+    Object.assign(this, { db, applications, open, seal, now, concurrency, legacyConcurrency, abuse, access });
     this.active = new Map();
     this.failures = 0;
     this.lastSuccessAt = null;
     this.lastErrorAt = null;
+    // Async workers and legacy calls have separate slots, so neither can starve the other.
     this.slots = new Set();
+    this.legacySlots = new Set();
     if (autoStart) this.start();
   }
   start() {
@@ -96,48 +109,52 @@ export class DeliveryQueue {
     const encoded = content ? JSON.stringify(content) : '';
     const contentHash = encoded ? sha256Hex(encoded) : '';
     const job = await this.db.transaction(async () => {
-      await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
-      await this.db.query('SELECT pg_advisory_xact_lock(72841103)');
+      // Row locks, application first: configuration changes take this application's row FOR UPDATE, and
+      // revocation and other sends to this device take the registration row.
+      const application = await this.db
+        .prepare('SELECT enabled,revision FROM applications WHERE id=? FOR SHARE')
+        .get(entry.app_id);
       entry = await this.db
         .prepare('SELECT * FROM registrations WHERE id=? AND expires>? FOR UPDATE')
         .get(entry.id, this.now());
-      if (!entry || !(await this.applications.current(entry))) fail(410, 'Registration expired or revoked');
+      if (!entry || !application?.enabled || application.revision !== entry.app_revision)
+        fail(410, 'Registration expired or revoked');
       if (!allows(entry, kind) || !(await this.applications.capabilities(entry.app_id, entry.channel)).includes(kind))
         fail(403, 'Credential scope mismatch');
       if (this.stopping) fail(503, 'Gateway shutting down');
       if (mode === 'async' && (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(requestId)))
         fail(400, 'A requestId of 16-100 letters, numbers, underscores or hyphens is required');
       const dedupe = requestId ? sha256Hex(entry.id + ':' + requestId) : null;
-      if (dedupe) {
-        const previous = await this.db.prepare('SELECT * FROM delivery_jobs WHERE dedupe=?').get(dedupe);
-        if (previous) {
-          if (previous.kind !== kind || previous.notification_hash !== contentHash)
-            fail(409, 'Request ID already used for another kind');
-          return previous;
-        }
+      // One read for the duplicate request, the queue cap and this device's active job.
+      const check = await this.db
+        .prepare(
+          `SELECT previous.id previous,previous.kind previous_kind,previous.notification_hash previous_hash,
+          (SELECT count(*) FROM delivery_jobs WHERE state IN ('queued','retrying','sending')) queued,
+          EXISTS(SELECT 1 FROM delivery_jobs WHERE registration_id=? AND state IN ('queued','retrying','sending')) pending
+          FROM (SELECT 1) one LEFT JOIN delivery_jobs previous ON previous.dedupe=?`,
+        )
+        .get(entry.id, dedupe);
+      if (check.previous) {
+        if (check.previous_kind !== kind || check.previous_hash !== contentHash)
+          fail(409, 'Request ID already used for another kind');
+        return await this.get(check.previous);
       }
-      if (
-        (
-          await this.db
-            .prepare("SELECT count(*) n FROM delivery_jobs WHERE state IN ('queued','retrying','sending')")
-            .get()
-        ).n >= 10000
-      )
-        fail(503, 'Queue capacity reached');
+      // Sends to different devices no longer serialize, so concurrent ones can pass this check together and
+      // overshoot the cap by at most the requests in flight.
+      if (check.queued >= 10000) fail(503, 'Queue capacity reached');
       // One active sync hint per registration, also prevents legacy/async overlap.
-      const pending = await this.db
-        .prepare("SELECT 1 FROM delivery_jobs WHERE registration_id=? AND state IN ('queued','retrying','sending')")
-        .get(entry.id);
-      if (pending || (entry.last_sent && this.now() - entry.last_sent < 60000)) fail(429, 'Device rate limit');
+      if (check.pending || (entry.last_sent && this.now() - entry.last_sent < 60000)) fail(429, 'Device rate limit');
       const id = randomUUID(),
         time = this.now();
       await this.abuse?.task(entry);
-
-      await this.db
+      return await this.db
         .prepare(
-          'INSERT INTO delivery_jobs(id,registration_id,app_id,channel,device_id,mode,dedupe,state,created,updated,next_at,expires,kind,notification,notification_hash,notification_sealed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          `WITH job AS (INSERT INTO delivery_jobs(id,registration_id,app_id,channel,device_id,mode,dedupe,state,created,updated,next_at,expires,kind,notification,notification_hash,notification_sealed)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *),
+          sent AS (UPDATE registrations SET last_sent=? WHERE id=?)
+          SELECT * FROM job`,
         )
-        .run(
+        .get(
           id,
           entry.id,
           entry.app_id,
@@ -154,9 +171,9 @@ export class DeliveryQueue {
           encoded ? this.seal(encoded) : null,
           contentHash,
           1,
+          time,
+          entry.id,
         );
-      await this.db.prepare('UPDATE registrations SET last_sent=? WHERE id=?').run(time, entry.id);
-      return await this.get(id);
     });
     if (mode === 'async' && this.timer) this.wake();
     return job;
@@ -171,9 +188,10 @@ export class DeliveryQueue {
     await cancelJobs(this.db, this.now(), 'OperatorCancelled', 'id=?', [id], ['queued', 'retrying']);
     return this.public(await this.get(id));
   }
-  reserve() {
+  reserve(legacy = false) {
+    const slots = legacy ? this.legacySlots : this.slots;
     if (this.stopping) fail(503, 'Gateway shutting down');
-    if (this.slots.size >= this.concurrency) fail(503, 'Workers busy');
+    if (slots.size >= (legacy ? this.legacyConcurrency : this.concurrency)) fail(503, 'Workers busy');
     let finish;
     const slot = {
       done: new Promise(resolve => {
@@ -181,12 +199,12 @@ export class DeliveryQueue {
       }),
     };
     slot.release = () => {
-      if (this.slots.delete(slot)) {
+      if (slots.delete(slot)) {
         finish();
-        if (this.timer && !this.flushing) this.wake();
+        if (!legacy && this.timer && !this.flushing) this.wake();
       }
     };
-    this.slots.add(slot);
+    slots.add(slot);
     return slot;
   }
   async execute(id, reserved) {
@@ -201,13 +219,20 @@ export class DeliveryQueue {
       slot.release();
     }
   }
+  // Correctness rests on the state conditions of the claim and the final update, not on repeated reads: a job
+  // cancelled while it is being sent keeps its cancellation, because the result is written only WHERE
+  // state='sending'.
   async perform(id) {
-    const job = await this.get(id);
-    if (!job || terminal.has(job.state)) return job;
-    if (job.state === 'sending') return job;
-    const entry = await this.db
-      .prepare('SELECT * FROM registrations WHERE id=? AND expires>? AND delivery_hash IS NOT NULL')
-      .get(job.registration_id, this.now());
+    const found = await this.db
+      .prepare(
+        `SELECT job.*,row_to_json(entry) registration FROM delivery_jobs job
+        LEFT JOIN registrations entry ON entry.id=job.registration_id AND entry.expires>? AND entry.delivery_hash IS NOT NULL
+        WHERE job.id=?`,
+      )
+      .get(this.now(), id);
+    if (!found) return found;
+    const { registration: entry, ...job } = found;
+    if (terminal.has(job.state) || job.state === 'sending') return job;
     if (
       !entry ||
       !(await this.applications.current(entry)) ||
@@ -241,13 +266,11 @@ export class DeliveryQueue {
     let result;
     try {
       const route = await this.applications.resolve(entry.app_id, entry.channel, entry.environment);
-      // Configuration lookup yields; recheck cancellation immediately before send.
-      if ((await this.get(id)).state !== 'sending' || !(await this.applications.current(entry))) return this.get(id);
       const content = job.notification
         ? JSON.parse(job.notification_sealed ? this.open(job.notification) : job.notification)
         : {};
       const { fallback } = await this.applications.notifications(entry.app_id);
-      if ((await this.get(id)).state !== 'sending' || !(await this.applications.current(entry))) return this.get(id);
+      if (!(await this.applications.current(entry))) return this.get(id);
       if (!(await this.applications.capabilities(entry.app_id, entry.channel)).includes(job.kind)) {
         await cancelJobs(this.db, this.now(), 'CapabilityDisabled', 'id=?', [id], ['sending']);
         return this.get(id);
@@ -256,15 +279,15 @@ export class DeliveryQueue {
         await this.cancelRegistration(entry.id);
         return this.get(id);
       }
+      // The one read before sending: the configuration lookups above can yield to a cancellation.
+      if ((await this.db.prepare('SELECT state FROM delivery_jobs WHERE id=?').get(id))?.state !== 'sending')
+        return this.get(id);
       result = await route.adapter.send(entry, this.open(entry.token), { kind: job.kind, ...content, fallback });
     } catch {
       result = { status: 0, reason: 'NetworkError' };
     }
-    if ((await this.get(id)).state !== 'sending') return await this.get(id);
-    if (
-      !(await this.applications.current(entry)) ||
-      !(await this.db.prepare('SELECT 1 FROM registrations WHERE id=? AND expires>?').get(entry.id, this.now()))
-    ) {
+    // Every path that deletes a registration cancels its work, which the final update below respects.
+    if (!(await this.applications.current(entry))) {
       await this.cancelRegistration(entry.id);
       return await this.get(id);
     }
@@ -273,8 +296,7 @@ export class DeliveryQueue {
     const retryable = status === 429 || status >= 500;
     let state = status === 200 ? 'accepted' : status === 0 ? 'unknown' : 'failed';
     let next = this.now();
-    if (invalidToken(result)) await this.db.prepare('DELETE FROM registrations WHERE id=?').run(entry.id);
-    else if (job.mode === 'async' && retryable && attempts < 6) {
+    if (!invalidToken(result) && job.mode === 'async' && retryable && attempts < 6) {
       const header = result.retryAfter;
       const retryAfter = header
         ? /^\d+$/.test(String(header))
@@ -296,18 +318,20 @@ export class DeliveryQueue {
           : status === 0
             ? 'NetworkError'
             : 'ProviderRejected';
-    await this.db
+    const recorded = await this.db
       .prepare(
-        "UPDATE delivery_jobs SET state=?,status=?,reason=?,updated=?,next_at=?,duration=?,notification=CASE WHEN ?='retrying' THEN notification ELSE NULL END WHERE id=? AND state='sending'",
+        "UPDATE delivery_jobs SET state=?,status=?,reason=?,updated=?,next_at=?,duration=?,notification=CASE WHEN ?='retrying' THEN notification ELSE NULL END WHERE id=? AND state='sending' RETURNING *",
       )
-      .run(state, status, reason, this.now(), next, Math.round(performance.now() - start), state, id);
-    return await this.get(id);
+      .get(state, status, reason, this.now(), next, Math.round(performance.now() - start), state, id);
+    // A job cancelled during the send keeps its cancellation and its registration.
+    if (!recorded) return await this.get(id);
+    if (invalidToken(result)) await this.db.prepare('DELETE FROM registrations WHERE id=?').run(entry.id);
+    return recorded;
   }
   async legacy(entry, kind = 'sync', notification, alert) {
     // Legacy callers own retries. Never background-retry a failed legacy call.
-    // Reserve synchronously, before the first database await. Async workers use
-    // the same slots, so an admitted legacy task always has an executor.
-    const slot = this.reserve();
+    // Reserve synchronously, before the first database await, so an admitted legacy task always has an executor.
+    const slot = this.reserve(true);
     try {
       const job = await this.enqueue(entry, { mode: 'legacy', kind, notification, alert });
       return await this.execute(job.id, slot);
@@ -344,7 +368,7 @@ export class DeliveryQueue {
             )
             .all(this.now(), ...active, capacity);
           for (const job of jobs) {
-            // Legacy admission can consume slots while the query is running.
+            // Slots can fill while the query is running.
             if (this.stopping || this.slots.size >= this.concurrency) break;
             const work = this.execute(job.id);
             pending.add(work);
@@ -382,6 +406,6 @@ export class DeliveryQueue {
     clearInterval(this.timer);
     this.resumeWake?.();
     await this.flushing;
-    await Promise.allSettled([...this.slots].map(slot => slot.done));
+    await Promise.allSettled([...this.slots, ...this.legacySlots].map(slot => slot.done));
   }
 }

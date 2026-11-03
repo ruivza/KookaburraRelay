@@ -49,9 +49,12 @@ export async function deviceAPI({
       const challenge = randomSecret();
       const expiresAt = now() + 300000;
       await db.transaction(async () => {
-        await db.query('SELECT pg_advisory_xact_lock(72841104)');
+        // Configuration changes to this application take its row FOR UPDATE.
+        const application = await db
+          .prepare('SELECT enabled,revision FROM applications WHERE id=? FOR SHARE')
+          .get(appId);
         await access.commitRegistration(body, accessGrant);
-        if (!(await applications.current({ app_id: appId, app_revision: route.revision })))
+        if (!application?.enabled || application.revision !== route.revision)
           fail(409, 'Application configuration changed');
         const currentKinds = await applications.capabilities(appId, channel);
         if (kinds.some(k => !currentKinds.includes(k))) fail(403, 'Notification capability disabled for application');
@@ -121,13 +124,22 @@ export async function deviceAPI({
   const confirm = path.match(/^\/v1\/registrations\/([A-Za-z0-9_-]+)\/confirm$/);
   if (confirm && req.method === 'POST') {
     await limit('confirm-ip:' + req.rateKey, 120);
+    const appId = body.appId ?? defaultApp;
     const value = await db.transaction(async () => {
-      await db.query('SELECT pg_advisory_xact_lock(72841104)');
-      const entry = await db.prepare('SELECT * FROM registrations WHERE id=? AND expires>?').get(confirm[1], now());
+      // Application row first, as configuration changes lock it; the registration row keeps concurrent
+      // confirmations of one registration from both minting credentials.
+      const application =
+        typeof appId === 'string'
+          ? await db.prepare('SELECT enabled,revision FROM applications WHERE id=? FOR SHARE').get(appId)
+          : null;
+      const entry = await db
+        .prepare('SELECT * FROM registrations WHERE id=? AND expires>? FOR UPDATE')
+        .get(confirm[1], now());
       if (
         !entry ||
-        !(await applications.current(entry)) ||
-        entry.app_id !== (body.appId ?? defaultApp) ||
+        !application?.enabled ||
+        application.revision !== entry.app_revision ||
+        entry.app_id !== appId ||
         typeof body.challenge !== 'string' ||
         body.nonce !== entry.nonce ||
         !timingSafeEqual(Buffer.from(sha256Hex(body.challenge)), Buffer.from(entry.challenge_hash || '0'.repeat(64)))
@@ -180,9 +192,9 @@ export async function deviceAPI({
   if (revoke && req.method === 'DELETE') {
     if (!isToken43(bearer(req))) return send(200, { revoked: true });
     await db.transaction(async () => {
-      await db.query('SELECT pg_advisory_xact_lock(72841103)');
+      // Waits for a send holding this registration, so the job it queued is cancelled below.
       const owned = await db
-        .prepare('SELECT id FROM registrations WHERE id=? AND revoke_hash=?')
+        .prepare('SELECT id FROM registrations WHERE id=? AND revoke_hash=? FOR UPDATE')
         .get(revoke[1], sha256Hex(bearer(req)));
       if (owned) await queue.cancelRegistration(owned.id);
       await db.prepare('DELETE FROM registrations WHERE id=? AND revoke_hash=?').run(revoke[1], sha256Hex(bearer(req)));

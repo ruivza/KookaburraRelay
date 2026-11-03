@@ -20,6 +20,8 @@ import { Observability } from './observability.js';
 import { adminAPI } from './admin-api.js';
 import { deviceAPI } from './device-api.js';
 import { AbuseProtection } from './abuse.js';
+import { RateLimiter } from './rate-limit.js';
+import { ConfigCache } from './config-cache.js';
 import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
 // Logged routes and error codes never carry identifiers, bodies or messages.
 const routeOf = path => {
@@ -51,6 +53,40 @@ const gauges = metrics =>
     )
     .join('');
 const attention = status => +!['ok', 'disabled'].includes(status);
+// The console is read once per gateway start and served from memory. Pages, scripts and styles revalidate on
+// every load (so an upgrade applies at once) and answer an unchanged ETag with 304.
+function loadConsole() {
+  const files = new Map();
+  const add = (path, file, headers) => {
+    const body = readFileSync(new URL('../public/' + file, import.meta.url));
+    files.set(path, { body, headers, etag: '"' + sha256Hex(body).slice(0, 32) + '"' });
+  };
+  add('/', 'index.html', {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    'Content-Security-Policy':
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
+  });
+  for (const name of [
+    'admin',
+    'theme',
+    'i18n',
+    'security-ui',
+    'maintenance-ui',
+    'monitor-charts',
+    'backups-ui',
+    'abuse-ui',
+    'access-ui',
+  ])
+    add('/' + name + '.js', name + '.js', { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-cache' });
+  add('/style.css', 'style.css', { 'Content-Type': 'text/css', 'Cache-Control': 'no-cache' });
+  for (const name of ['logo', 'favicon'])
+    add('/' + name + '.png', 'assets/' + name + '.png', {
+      'Content-Type': 'image/png',
+      'Cache-Control': 'public, max-age=3600',
+    });
+  return files;
+}
 
 export async function createGateway({
   databaseUrl = process.env.GATEWAY_DATABASE_URL,
@@ -67,10 +103,15 @@ export async function createGateway({
   appleVerifier,
   googleVerifier,
   alertSender,
+  databasePoolSize = Number(process.env.GATEWAY_DATABASE_POOL_SIZE || 20),
+  deliveryWorkers = Number(process.env.GATEWAY_DELIVERY_WORKERS || 32),
 } = {}) {
+  if (!Number.isInteger(deliveryWorkers) || deliveryWorkers < 1 || deliveryWorkers > 256)
+    throw Error('GATEWAY_DELIVERY_WORKERS must be an integer from 1 to 256');
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  const consoleFiles = loadConsole();
   const addressFor = clientAddressResolver(trustedProxies);
-  const db = new Database(databaseUrl, databaseSchema);
+  const db = new Database(databaseUrl, databaseSchema, { poolSize: databasePoolSize });
   let owner, applications, queue, monitor, maintenance, server, abuse, access, alerts;
   let ownershipLost = false,
     initialized = false,
@@ -101,17 +142,13 @@ export async function createGateway({
             if (owner) {
               const client = owner;
               owner = null;
-              let discard = ownershipLost;
+              // An unlock failure still reaches the caller after the pool is closed below; ending the session
+              // releases the lock either way.
               try {
                 if (!ownershipLost)
                   await client.query('SELECT pg_advisory_unlock(hashtext(current_schema()), 72841102)');
-              } catch (error) {
-                discard = true;
-                // The pool is still closed below; an unlock failure must reach the caller.
-                // eslint-disable-next-line no-unsafe-finally
-                throw error;
               } finally {
-                client.release(discard);
+                await client.end().catch(() => {});
               }
             }
           } finally {
@@ -134,8 +171,9 @@ export async function createGateway({
   };
   try {
     await db.initialize();
-    // Explicit single-owner lock: PostgreSQL migration does not imply distributed workers.
-    owner = await db.pool.connect();
+    // Explicit single-owner lock: PostgreSQL migration does not imply distributed workers. The session that holds
+    // it is outside the pool, so it costs no pool slot.
+    owner = await db.dedicated();
     owner.on('error', () => {
       ownershipLost = true;
       console.error('Gateway database ownership lost; shutting down');
@@ -161,12 +199,23 @@ export async function createGateway({
     await security.initialize(adminToken);
     const backups = new Backups({ db, seal, open, security, now });
     await backups.initialize();
-    applications = new Applications({ db, seal, open, providerFactory, fcmFactory, now });
-    abuse = new AbuseProtection({ db, now });
+    const cache = new ConfigCache(db);
+    applications = new Applications({ db, seal, open, providerFactory, fcmFactory, now, cache });
+    abuse = new AbuseProtection({ db, now, cache });
     await abuse.initialize();
-    access = new AccessControl({ db, seal, open, now, abuse, appleVerifier, googleVerifier });
+    access = new AccessControl({ db, seal, open, now, abuse, appleVerifier, googleVerifier, cache });
     await access.initialize();
-    queue = new DeliveryQueue({ db, applications, open, seal, now, abuse, access, autoStart: false });
+    queue = new DeliveryQueue({
+      db,
+      applications,
+      open,
+      seal,
+      now,
+      abuse,
+      access,
+      autoStart: false,
+      concurrency: deliveryWorkers,
+    });
     monitor = new Observability({ db, now, queue, backups });
     await monitor.initialize(autoStart);
     alerts = new Alerts({ db, seal, open, abuse, monitor, now, sender: alertSender });
@@ -188,30 +237,17 @@ export async function createGateway({
     const monitorPath = resolve(dataDir, 'monitor.token');
     if (!existsSync(monitorPath)) writeFileSync(monitorPath, randomSecret(), { mode: 0o600, flag: 'wx' });
     const monitorToken = readFileSync(monitorPath, 'utf8').trim();
-    // Only unauthenticated enrollment keys share a row cap; operator, login and sender keys never fail on capacity.
+    // Unauthenticated enrollment keys have their own capped table that refuses new keys when full; operator, login
+    // and sender keys never fail on capacity, the least recently used one is dropped instead.
     const enrollmentKey = /^(enroll-ip|enroll-token|confirm-ip):/;
-    async function limit(key, maximum, window = 3600000) {
-      await db.transaction(async () => {
-        await db.query('SELECT pg_advisory_xact_lock(72841105)');
-        const time = now();
-        const previous = await db.prepare('SELECT * FROM limits WHERE key=?').get(key);
-        if (previous && previous.start > time - window && previous.count >= maximum)
-          abuse.reject('source_or_device', (previous.start + window - time) / 1000);
-        if (
-          !previous &&
-          enrollmentKey.test(key) &&
-          (await db.prepare("SELECT count(*) n FROM limits WHERE key LIKE 'enroll-%' OR key LIKE 'confirm-ip:%'").get())
-            .n >= 20000
-        )
-          abuse.reject('limit_capacity', 60, 503);
-        await db
-          .prepare(
-            `INSERT INTO limits VALUES(?,?,1) ON CONFLICT(key) DO UPDATE SET
-          count=CASE WHEN limits.start<=? THEN 1 ELSE limits.count+1 END,
-          start=CASE WHEN limits.start<=? THEN excluded.start ELSE limits.start END`,
-          )
-          .run(key, time, time - window, time - window);
-      });
+    const rateLimits = {
+      enrollment: new RateLimiter({ capacity: 20000, evict: false, now }),
+      general: new RateLimiter({ capacity: 100000, evict: true, now }),
+    };
+    function limit(key, maximum, window = 3600000) {
+      const result = (enrollmentKey.test(key) ? rateLimits.enrollment : rateLimits.general).take(key, maximum, window);
+      if (result?.full) abuse.reject('limit_capacity', 60, 503);
+      if (result) abuse.reject('source_or_device', result.retryAfter / 1000);
     }
 
     function bearer(req) {
@@ -253,10 +289,7 @@ export async function createGateway({
               await monitor.record({
                 kind: res.statusCode >= 400 ? 'error' : 'request',
                 action: req.method + ' ' + routeOf(path),
-                appId:
-                  validID(logApp) && (await db.prepare('SELECT 1 FROM applications WHERE id=?').get(logApp))
-                    ? logApp
-                    : '',
+                appId: validID(logApp) && (await cache.application(logApp)) ? logApp : '',
                 channel: req.gatewayScope?.channel || (['apns', 'fcm'].includes(body?.channel) ? body.channel : ''),
                 status: res.statusCode,
                 duration,
@@ -283,13 +316,15 @@ export async function createGateway({
         release = abuse.admit(req.rateKey);
         const url = new URL(req.url, 'http://localhost');
         path = url.pathname;
-        if (req.method === 'GET' && ['/logo.png', '/favicon.png'].includes(path)) {
-          res.writeHead(200, {
-            'Content-Type': 'image/png',
-            'Cache-Control': 'public, max-age=3600',
-            'X-Content-Type-Options': 'nosniff',
-          });
-          return res.end(readFileSync(new URL('../public/assets' + path, import.meta.url)));
+        const asset = req.method === 'GET' && consoleFiles.get(path);
+        if (asset) {
+          const headers = { ...asset.headers, ETag: asset.etag, 'X-Content-Type-Options': 'nosniff' };
+          if (req.headers['if-none-match'] === asset.etag) {
+            res.writeHead(304, headers);
+            return res.end();
+          }
+          res.writeHead(200, headers);
+          return res.end(asset.body);
         }
         if (path === '/favicon.ico' && req.method === 'GET') {
           res.writeHead(204);
@@ -298,36 +333,6 @@ export async function createGateway({
         if (path === '/healthz' && req.method === 'GET') {
           await db.prepare('SELECT 1').get();
           return send(200, { status: 'ok' });
-        }
-        if (req.method === 'GET' && path === '/') {
-          res.writeHead(200, {
-            'Content-Type': 'text/html; charset=utf-8',
-            'Cache-Control': 'no-store',
-            'Content-Security-Policy':
-              "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
-          });
-          return res.end(readFileSync(new URL('../public/index.html', import.meta.url)));
-        }
-        if (
-          req.method === 'GET' &&
-          [
-            '/admin.js',
-            '/theme.js',
-            '/i18n.js',
-            '/security-ui.js',
-            '/maintenance-ui.js',
-            '/monitor-charts.js',
-            '/backups-ui.js',
-            '/abuse-ui.js',
-            '/access-ui.js',
-            '/style.css',
-          ].includes(path)
-        ) {
-          res.writeHead(200, {
-            'Content-Type': path.endsWith('.js') ? 'text/javascript' : 'text/css',
-            'X-Content-Type-Options': 'nosniff',
-          });
-          return res.end(readFileSync(new URL('../public' + path, import.meta.url)));
         }
         if (path.startsWith('/admin/')) {
           await security.authenticate(bearer(req));
@@ -563,6 +568,7 @@ export async function createGateway({
       abuse,
       access,
       alerts,
+      rateLimits,
       close,
     };
   } catch (error) {

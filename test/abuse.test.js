@@ -294,7 +294,7 @@ test('memory admission and logging remain bounded under changing keys and slow w
   let now = 0;
   const abuse = new AbuseProtection({ now: () => now });
   for (let n = 0; n < 11000; n++) abuse.memory('source:' + n, 1);
-  assert.equal(abuse.buckets.size, 10000);
+  assert.equal(abuse.limiter.windows.size, 10000);
   assert.equal(abuse.memory('extra', 1), false);
   now = 60001;
   assert.equal(abuse.memory('extra', 1), true);
@@ -406,18 +406,11 @@ test('junk enrollments cannot exhaust rate-limit capacity for administrators and
     const grant = await f.enroll();
     const unknown = await f.call('/v1/registrations', { ...f.input(2), appId: 'unknown-app' }, '', '203.0.113.7');
     assert.equal(unknown.status, 404);
-    assert.equal(
-      (
-        await f.app.db
-          .prepare("SELECT count(*) n FROM limits WHERE key LIKE '%unknown-app%' OR key LIKE '%203.0.113.7'")
-          .get()
-      ).n,
-      0,
-    );
-    // Model a flood of caller-chosen device tokens that filled the enrollment share of the table.
-    await f.app.db.query("INSERT INTO limits SELECT 'enroll-token:junk-'||n,$1,1 FROM generate_series(1,20000) n", [
-      f.app.abuse.now(),
-    ]);
+    const { enrollment, general } = f.app.rateLimits;
+    const keys = [...enrollment.windows.keys(), ...general.windows.keys()];
+    assert.equal(keys.filter(key => key.includes('unknown-app') || key.endsWith('203.0.113.7')).length, 0);
+    // Model a flood of caller-chosen device tokens that filled the enrollment counters.
+    for (let n = 0; enrollment.windows.size < 20000; n++) enrollment.take('enroll-token:junk-' + n, 6, 3600000);
     const blocked = await f.call('/v1/registrations', f.input(3), '', '203.0.113.8');
     assert.equal(blocked.status, 503);
     assert.equal(blocked.body.reason, 'limit_capacity');
@@ -443,7 +436,7 @@ test('a source exhausting its own request budget neither consumes nor blocks the
     }
   }
   assert.equal(limited, 5500);
-  assert.equal(abuse.buckets.get('http:global').count, 600);
+  assert.equal(abuse.limiter.count('http:global'), 600);
   abuse.admit('198.51.100.2')();
   let admitted = 601,
     reason;
@@ -477,6 +470,85 @@ test('resource settings require admin auth, validate bounds and persist; malform
     assert.equal(f.sent.length, 0);
     await f.restart();
     assert.equal(f.app.abuse.settings.challengeConcurrency, 2);
+  } finally {
+    await f.close();
+  }
+});
+
+// Sends, registrations and confirmations lock rows instead of serializing on one global lock.
+const pendingJobs = async f =>
+  (await f.app.db.prepare("SELECT count(*) n FROM delivery_jobs WHERE state IN ('queued','retrying','sending')").get())
+    .n;
+
+test('concurrent confirmations of one registration mint a single grant', async () => {
+  const f = await fixture();
+  try {
+    // An earlier grant for the same device token makes confirmation cancel its work; holding that call keeps the
+    // first confirmation inside its transaction while the others arrive.
+    await f.enroll(1);
+    const r = await f.call('/v1/registrations', f.input(1));
+    const proof = f.sent.find(p => p.perchRegistration?.id === r.body.registrationId).perchRegistration;
+    const cancel = f.app.queue.cancelRegistration.bind(f.app.queue);
+    let reached, release;
+    const inside = new Promise(resolve => (reached = resolve)),
+      gate = new Promise(resolve => (release = resolve));
+    f.app.queue.cancelRegistration = async id => {
+      reached();
+      await gate;
+      return cancel(id);
+    };
+    const confirm = () => f.call('/v1/registrations/' + proof.id + '/confirm', proof);
+    const first = confirm();
+    await inside;
+    const others = Array.from({ length: 3 }, confirm);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    release();
+    const results = await Promise.all([first, ...others]);
+    assert.deepEqual(
+      results.map(x => x.status),
+      Array(4).fill(200),
+    );
+    assert.equal(new Set(results.map(x => x.body.credential)).size, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test('sends racing a configuration change never leave work queued for the old configuration', async () => {
+  const f = await fixture();
+  try {
+    const grants = [];
+    for (let n = 1; n <= 8; n++) grants.push(await f.enroll(n));
+    const sends = grants.map((g, n) =>
+      f.call('/v1/jobs', scope(g, 'config-race-' + String(n).padStart(8, '0')), g.credential, '198.51.100.' + (n + 1)),
+    );
+    const change = f.app.applications.update('perch-mail', { name: 'Mail', enabled: false });
+    const results = await Promise.all(sends);
+    await change;
+    assert.ok(
+      results.every(r => r.status === 202 || r.status === 410),
+      JSON.stringify(results.map(r => r.status)),
+    );
+    assert.equal(await pendingJobs(f), 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test('a revocation racing a send leaves no queued work for the revoked registration', async () => {
+  const f = await fixture();
+  try {
+    for (let n = 1; n <= 5; n++) {
+      const g = await f.enroll(n);
+      const ip = '198.51.100.' + (n + 1);
+      const [sent, revoked] = await Promise.all([
+        f.call('/v1/jobs', scope(g, 'revoke-race-' + String(n).padStart(8, '0')), g.credential, ip),
+        f.call('/v1/registrations/' + g.registrationId, undefined, g.revokeToken, ip, 'DELETE'),
+      ]);
+      assert.equal(revoked.status, 200);
+      assert.ok([202, 410].includes(sent.status), String(sent.status));
+    }
+    assert.equal(await pendingJobs(f), 0);
   } finally {
     await f.close();
   }

@@ -3,6 +3,7 @@ import { defaultApp, validID } from './applications.js';
 import { requestedKinds } from './notification.js';
 import { verifyApple, GoogleIntegrity, googleCredential } from './integrity.js';
 import { cancelJobs } from './delivery.js';
+import { ConfigCache } from './config-cache.js';
 import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
 export const accessDefaults = Object.freeze({
   requireTrustedServers: false,
@@ -55,8 +56,17 @@ export function registrationBinding(body) {
   );
 }
 export class AccessControl {
-  constructor({ db, seal, open, now = Date.now, abuse, appleVerifier = verifyApple, googleVerifier }) {
-    Object.assign(this, { db, seal, open, now, abuse, appleVerifier });
+  constructor({
+    db,
+    seal,
+    open,
+    now = Date.now,
+    abuse,
+    appleVerifier = verifyApple,
+    googleVerifier,
+    cache = new ConfigCache(db),
+  }) {
+    Object.assign(this, { db, seal, open, now, abuse, appleVerifier, cache });
     this.google = googleVerifier ?? new GoogleIntegrity({ now });
     this.verifying = 0;
   }
@@ -83,9 +93,8 @@ export class AccessControl {
     await this.cleaning;
   }
   async policy(appId) {
-    if (!validID(appId) || !(await this.db.prepare('SELECT 1 FROM applications WHERE id=?').get(appId)))
-      fail(404, 'Application not found');
-    const row = await this.db.prepare('SELECT * FROM access_policies WHERE app_id=?').get(appId);
+    if (!validID(appId) || !(await this.cache.application(appId))) fail(404, 'Application not found');
+    const row = await this.cache.policy(appId);
     return {
       settings: { ...accessDefaults, ...row?.settings },
       revision: row?.revision ?? 'initial',
@@ -150,6 +159,9 @@ export class AccessControl {
     const credential = input.googleServiceAccount ? googleCredential(input.googleServiceAccount) : null;
     await this.db.transaction(async () => {
       await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
+      this.cache.writing();
+      // Registrations for this application hold its row FOR SHARE while they commit.
+      await this.db.prepare('SELECT 1 FROM applications WHERE id=? FOR UPDATE').get(appId);
       const previous = await this.policy(appId),
         encrypted = credential ? this.seal(JSON.stringify(credential)) : previous.secret;
       if (settings.androidRequired && !encrypted) fail(400, 'Google verification credential required');
@@ -158,6 +170,7 @@ export class AccessControl {
           'INSERT INTO access_policies VALUES(?,?,?,?) ON CONFLICT(app_id) DO UPDATE SET settings=excluded.settings,revision=excluded.revision,google_secret=excluded.google_secret',
         )
         .run(appId, JSON.stringify(settings), randomUUID(), encrypted);
+      this.cache.invalidate('policy', appId);
       await cancelJobs(this.db, this.now(), 'AccessPolicyChanged', 'app_id=?', [appId]);
       await this.db.prepare('DELETE FROM registrations WHERE app_id=?').run(appId);
       await this.db.prepare('DELETE FROM integrity_keys WHERE app_id=?').run(appId);
@@ -184,6 +197,7 @@ export class AccessControl {
       fail(400, 'Invalid server application');
     await this.db.transaction(async () => {
       await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
+      this.cache.writing();
       if ((await this.db.prepare('SELECT count(*) n FROM trusted_servers').get()).n >= 1000)
         fail(409, 'Server directory full');
       for (const id of body.apps) await this.policy(id);
@@ -192,6 +206,7 @@ export class AccessControl {
       await this.db
         .prepare("INSERT INTO trusted_servers VALUES(?,?,'pending',NULL,?,?,?)")
         .run(body.id, body.name.trim(), JSON.stringify([...new Set(body.apps)]), randomUUID(), this.now());
+      this.cache.invalidate('server', body.id);
     });
     return { id: body.id, state: 'pending' };
   }
@@ -200,20 +215,20 @@ export class AccessControl {
     const credential = body.action === 'block' ? null : randomSecret();
     await this.db.transaction(async () => {
       await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
+      this.cache.writing();
       const row = await this.db.prepare('SELECT * FROM trusted_servers WHERE id=? FOR UPDATE').get(id);
       if (!row) fail(404, 'Server not found');
       if (body.action === 'rotate' && row.state !== 'approved') fail(409, 'Server is not approved');
       await this.db
         .prepare('UPDATE trusted_servers SET state=?,credential_hash=?,revision=? WHERE id=?')
         .run(credential ? 'approved' : 'blocked', credential ? sha256Hex(credential) : null, randomUUID(), id);
+      this.cache.invalidate('server', id);
       await this.db.prepare('DELETE FROM server_tickets WHERE server_id=?').run(id);
-      await cancelJobs(
-        this.db,
-        this.now(),
-        'ServerAccessChanged',
-        'registration_id IN (SELECT id FROM registrations WHERE server_id=?)',
-        [id],
-      );
+      // Locking the server's registrations first lets a send holding one finish, so its job is cancelled too.
+      const registrations = await this.db.prepare('SELECT id FROM registrations WHERE server_id=? FOR UPDATE').all(id);
+      await cancelJobs(this.db, this.now(), 'ServerAccessChanged', 'registration_id=ANY(?::text[])', [
+        registrations.map(r => r.id),
+      ]);
       await this.db.prepare('DELETE FROM registrations WHERE server_id=?').run(id);
     });
     return { id, state: credential ? 'approved' : 'blocked', ...(credential ? { credential } : {}) };
@@ -231,8 +246,8 @@ export class AccessControl {
     if (!validID(body.appId) || !validID(body.deviceId) || !validID(body.serverId)) fail(400, 'Invalid ticket request');
     const ticket = randomSecret(),
       expiresAt = this.now() + 300000;
+    // No lock: a ticket issued while its server is blocked or rotated carries the old revision and is refused.
     await this.db.transaction(async () => {
-      await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
       const row = await this.authenticateServer(credential, body.appId, body.serverId);
       await this.policy(body.appId);
       await this.abuse.quota('tickets:global', 20000, 86400000, 'server_ticket_quota');
@@ -246,15 +261,16 @@ export class AccessControl {
     return { ticket, expiresAt };
   }
   async registrationServer(body, policy, consume = false) {
-    const row = await this.db.prepare('SELECT * FROM trusted_servers WHERE id=?').get(body.serverId);
+    const row = await this.cache.server(body.serverId);
     if (row?.state === 'blocked') fail(403, 'Server blocked');
     if (!body.serverTicket) {
       if (policy.settings.requireTrustedServers) fail(403, 'Server ticket required');
       return null;
     }
     if (!isToken43(body.serverTicket)) fail(403, 'Invalid server ticket');
+    // Consuming locks the ticket: a concurrent use waits, then finds it deleted.
     const ticket = await this.db
-      .prepare('SELECT * FROM server_tickets WHERE hash=? AND expires>?')
+      .prepare('SELECT * FROM server_tickets WHERE hash=? AND expires>?' + (consume ? ' FOR UPDATE' : ''))
       .get(sha256Hex(body.serverTicket), this.now());
     if (
       !ticket ||
@@ -284,8 +300,8 @@ export class AccessControl {
       !this.abuse.memory('integrity:challenge:global', 300)
     )
       this.abuse.reject('integrity_challenge_rate');
+    // A challenge created under a policy that changes meanwhile carries the old revision and cannot be used.
     return this.db.transaction(async () => {
-      await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
       const policy = await this.policy(appId);
       await this.registrationEnabled(appId);
       await this.registrationServer(registration, policy);
@@ -376,32 +392,36 @@ export class AccessControl {
         this.verifying--;
       }
     }
+    // The registration transaction checks the policy revision again under the application row lock.
     return this.db.transaction(async () => {
-      await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
       if ((await this.policy(appId)).revision !== policy.revision) fail(409, 'Access policy changed');
       const server = await this.registrationServer(body, policy, true);
       if (verified) {
         const { keyId, result, previous } = verified;
+        // The row lock serializes assertions of one key, so a replayed assertion cannot pass twice at once; a key
+        // attested by two registrations at once is inserted by only one of them.
         const current = await this.db
-          .prepare('SELECT * FROM integrity_keys WHERE app_id=? AND key_id=?')
+          .prepare('SELECT * FROM integrity_keys WHERE app_id=? AND key_id=? FOR UPDATE')
           .get(appId, keyId);
         if (current && (previous === null || current.counter !== previous || result.counter <= current.counter))
           fail(403, 'Application assertion replayed');
         if (!current && previous !== null) fail(403, 'Application key expired');
         if (!current && (await this.db.prepare('SELECT count(*) n FROM integrity_keys').get()).n >= 100000)
           this.abuse.reject('integrity_key_capacity', 60, 503);
-        await this.db
+        const stored = await this.db
           .prepare(
-            'INSERT INTO integrity_keys VALUES(?,?,?,?,?,?) ON CONFLICT(app_id,key_id) DO UPDATE SET counter=excluded.counter,expires=excluded.expires',
+            'INSERT INTO integrity_keys VALUES(?,?,?,?,?,?) ON CONFLICT(app_id,key_id) DO ' +
+              (current ? 'UPDATE SET counter=excluded.counter,expires=excluded.expires' : 'NOTHING'),
           )
           .run(appId, keyId, result.publicKey, result.counter, policy.revision, this.now() + 90 * 86400000);
+        if (!stored.changes) fail(403, 'Application assertion replayed');
       }
       return { revision: policy.revision, server };
     });
   }
   async commitRegistration(body, grant) {
     if ((await this.policy(body.appId ?? defaultApp)).revision !== grant.revision) fail(409, 'Access policy changed');
-    const row = await this.db.prepare('SELECT * FROM trusted_servers WHERE id=?').get(body.serverId);
+    const row = await this.cache.server(body.serverId);
     if (
       row?.state === 'blocked' ||
       (grant.server && (!row || row.state !== 'approved' || row.revision !== grant.server.revision))
@@ -410,13 +430,13 @@ export class AccessControl {
   }
   async delivery(req, entry) {
     const policy = await this.policy(entry.app_id);
-    const row = await this.db.prepare('SELECT state FROM trusted_servers WHERE id=?').get(entry.server_id);
+    const row = await this.cache.server(entry.server_id, { stored: true });
     if (row?.state === 'blocked') fail(403, 'Server blocked');
     if (policy.settings.requireTrustedServers || entry.trusted_server)
       await this.authenticateServer(req.headers['x-relay-server-credential'], entry.app_id, entry.server_id);
   }
   async active(entry) {
-    const row = await this.db.prepare('SELECT state FROM trusted_servers WHERE id=?').get(entry.server_id);
+    const row = await this.cache.server(entry.server_id, { stored: true });
     return row?.state !== 'blocked' && (!entry.trusted_server || row?.state === 'approved');
   }
 }

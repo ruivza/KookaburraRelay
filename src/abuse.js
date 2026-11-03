@@ -1,4 +1,6 @@
 import { cancelJobs } from './delivery.js';
+import { RateLimiter } from './rate-limit.js';
+import { ConfigCache } from './config-cache.js';
 const DAY = 86400000;
 // A confirmed grant can be fetched again only for idempotent client retries; then its plaintext is erased.
 export const confirmReplay = 600000;
@@ -28,11 +30,12 @@ const ceilings = {
 // One gateway process owns each database. Memory admission happens before any DB work;
 // durable quotas are charged in the caller's transaction, so failed admission rolls back.
 export class AbuseProtection {
-  constructor({ db, now = Date.now }) {
-    Object.assign(this, { db, now });
+  constructor({ db, now = Date.now, cache = db && new ConfigCache(db) }) {
+    Object.assign(this, { db, now, cache });
     this.settings = { ...abuseDefaults };
     this.pendingRejections = new Map();
-    this.buckets = new Map();
+    // Full means refuse: admission and log sampling fail closed rather than reset live windows.
+    this.limiter = new RateLimiter({ capacity: 10000, evict: false, now: () => this.now() });
     this.rejections = Object.create(null);
     this.requests = 0;
     this.challenges = 0;
@@ -73,14 +76,11 @@ export class AbuseProtection {
     return result;
   }
   async effective(appId) {
-    const row = await this.db.prepare('SELECT settings FROM application_quotas WHERE app_id=?').get(appId);
-    return { ...this.settings, ...row?.settings };
+    return { ...this.settings, ...(await this.cache.quota(appId)) };
   }
   async appSettings(appId) {
-    if (!(await this.db.prepare('SELECT 1 FROM applications WHERE id=?').get(appId)))
-      throw Object.assign(Error('Application not found'), { status: 404 });
-    const row = await this.db.prepare('SELECT settings FROM application_quotas WHERE app_id=?').get(appId);
-    return { overrides: row?.settings || {}, effective: await this.effective(appId) };
+    if (!(await this.cache.application(appId))) throw Object.assign(Error('Application not found'), { status: 404 });
+    return { overrides: (await this.cache.quota(appId)) || {}, effective: await this.effective(appId) };
   }
   async saveApp(appId, input) {
     await this.appSettings(appId);
@@ -106,6 +106,7 @@ export class AbuseProtection {
         'INSERT INTO application_quotas VALUES(?,?) ON CONFLICT(app_id) DO UPDATE SET settings=excluded.settings',
       )
       .run(appId, JSON.stringify(input));
+    this.cache.invalidate('quota', appId);
     return this.appSettings(appId);
   }
   async flushRejections() {
@@ -152,23 +153,7 @@ export class AbuseProtection {
     });
   }
   memory(key, maximum, window = 60000) {
-    const time = this.now();
-    let bucket = this.buckets.get(key);
-    if (bucket && bucket.until <= time) {
-      this.buckets.delete(key);
-      bucket = null;
-    }
-    if (!bucket) {
-      if (this.buckets.size >= 10000) {
-        for (const [key, value] of this.buckets) if (value.until <= time) this.buckets.delete(key);
-        if (this.buckets.size >= 10000) return false;
-      }
-      bucket = { count: 0, until: time + window };
-      this.buckets.set(key, bucket);
-    }
-    if (bucket.count >= maximum) return false;
-    bucket.count++;
-    return true;
+    return !this.limiter.take(key, maximum, window);
   }
   admit(address) {
     // Only requests their source may make reach the shared bucket; one flood cannot starve everyone.
@@ -197,25 +182,46 @@ export class AbuseProtection {
     };
   }
   async quota(key, maximum, window = DAY, reason = 'daily_quota') {
-    const time = this.now(),
-      start = Math.floor(time / window) * window;
-    const row = await this.db
-      .prepare(
-        `INSERT INTO abuse_quotas(key,start,expires,count) VALUES(?,?,?,1)
+    await this.quotas([[key, maximum, window, reason]]);
+  }
+  // Charges [key, maximum, window, reason] quotas in one statement, all or none. Each key is checked on its locked
+  // row, so concurrent charges cannot pass a limit; if any key is full, the others are refunded and the first full
+  // one in order rejects.
+  async quotas(charges) {
+    const time = this.now();
+    const rows = charges.map(([key, maximum, window = DAY]) => {
+      const start = Math.floor(time / window) * window;
+      return [key, start, start + window, maximum];
+    });
+    const charged = new Set(
+      (
+        await this.db
+          .prepare(
+            `WITH input(key,start,expires,maximum) AS (VALUES ${rows.map(() => '(?,?::bigint,?::bigint,?::integer)').join(',')})
+      INSERT INTO abuse_quotas(key,start,expires,count) SELECT key,start,expires,1 FROM input
       ON CONFLICT(key) DO UPDATE SET count=CASE WHEN abuse_quotas.start<>excluded.start THEN 1 ELSE abuse_quotas.count+1 END,
       start=excluded.start,expires=excluded.expires
-      WHERE abuse_quotas.start<>excluded.start OR abuse_quotas.count<? RETURNING count`,
-      )
-      .get(key, start, start + window, maximum);
-    if (!row) this.reject(reason, (start + window - time) / 1000);
+      WHERE abuse_quotas.start<>excluded.start OR abuse_quotas.count<(SELECT maximum FROM input WHERE input.key=excluded.key)
+      RETURNING key`,
+          )
+          .all(...rows.flat())
+      ).map(row => row.key),
+    );
+    const full = charges.findIndex(([key]) => !charged.has(key));
+    if (full < 0) return;
+    if (charged.size)
+      await this.db.prepare('UPDATE abuse_quotas SET count=count-1 WHERE key=ANY(?::text[])').run([...charged]);
+    this.reject(charges[full][3] ?? 'daily_quota', (rows[full][2] - time) / 1000);
   }
   async registration(appId) {
     const s = await this.effective(appId);
     if (!this.settings.registrationEnabled || !s.registrationEnabled) this.reject('registration_paused', 300, 503);
-    await this.quota('registration:global', s.registrationGlobalMinute, 60000, 'registration_global');
-    await this.quota('registration:app:' + appId, s.registrationAppMinute, 60000, 'registration_app');
-    await this.quota('challenge:global', s.challengeGlobalDay, DAY, 'challenge_global_day');
-    await this.quota('challenge:app:' + appId, s.challengeAppDay, DAY, 'challenge_app_day');
+    await this.quotas([
+      ['registration:global', s.registrationGlobalMinute, 60000, 'registration_global'],
+      ['registration:app:' + appId, s.registrationAppMinute, 60000, 'registration_app'],
+      ['challenge:global', s.challengeGlobalDay, DAY, 'challenge_global_day'],
+      ['challenge:app:' + appId, s.challengeAppDay, DAY, 'challenge_app_day'],
+    ]);
     const counts = await this.db
       .prepare(
         `SELECT count(*) total,count(*) FILTER (WHERE app_id=?) app
@@ -226,21 +232,18 @@ export class AbuseProtection {
   }
   async task(entry) {
     const s = await this.effective(entry.app_id);
-    await this.quota('task:global', s.taskGlobalDay, DAY, 'task_global_day');
-    await this.quota('task:app:' + entry.app_id, s.taskAppDay, DAY, 'task_app_day');
-    // The token hash includes app/channel/environment; re-enrolling cannot reset this quota.
-    await this.quota('task:device:' + entry.token_hash, s.taskDeviceDay, DAY, 'task_device_day');
+    await this.quotas([
+      ['task:global', s.taskGlobalDay, DAY, 'task_global_day'],
+      ['task:app:' + entry.app_id, s.taskAppDay, DAY, 'task_app_day'],
+      // The token hash includes app/channel/environment; re-enrolling cannot reset this quota.
+      ['task:device:' + entry.token_hash, s.taskDeviceDay, DAY, 'task_device_day'],
+    ]);
   }
   async attempt(entry) {
-    await this.db.transaction(async () => {
-      await this.quota('attempt:global', this.settings.attemptGlobalDay, DAY, 'attempt_global_day');
-      await this.quota(
-        'attempt:app:' + entry.app_id,
-        (await this.effective(entry.app_id)).attemptAppDay,
-        DAY,
-        'attempt_app_day',
-      );
-    });
+    await this.quotas([
+      ['attempt:global', this.settings.attemptGlobalDay, DAY, 'attempt_global_day'],
+      ['attempt:app:' + entry.app_id, (await this.effective(entry.app_id)).attemptAppDay, DAY, 'attempt_app_day'],
+    ]);
   }
   async log(work) {
     if (this.logWrites >= 8 || !this.memory('logs', 120)) {
@@ -260,6 +263,7 @@ export class AbuseProtection {
       await this.flushRejections();
       await this.db.prepare('DELETE FROM abuse_events WHERE time<?').run(this.now() - 7 * DAY);
       await this.db.prepare('DELETE FROM abuse_quotas WHERE expires<=?').run(this.now());
+      // Rows left by versions that counted rate limits in PostgreSQL.
       await this.db.prepare('DELETE FROM limits WHERE start<?').run(this.now() - 3600000);
       // Erase plaintext grants whose retry window has passed; rows confirmed before confirmed_at existed have none.
       await this.db
@@ -282,7 +286,7 @@ export class AbuseProtection {
             expired.map(r => r.id),
           ]);
       });
-      for (const [key, value] of this.buckets) if (value.until <= this.now()) this.buckets.delete(key);
+      this.limiter.prune();
     })();
     try {
       await this.cleaning;

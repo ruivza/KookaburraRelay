@@ -23,6 +23,8 @@ GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.3` and `ghcr.io/ruivza/ko
 | `GATEWAY_DATA_DIR` | Master key and initial admin / monitor tokens; defaults to repository-root `data/` |
 | `GATEWAY_ADMIN_TOKEN` | Optional initial administrator token, at least 32 characters |
 | `GATEWAY_TRUSTED_PROXIES` | Comma-separated verified proxy IP addresses / CIDRs |
+| `GATEWAY_DATABASE_POOL_SIZE` | PostgreSQL connections for requests and delivery; default 20, from 2 to 200. The ownership lock and cleanup use their own connections |
+| `GATEWAY_DELIVERY_WORKERS` | Concurrent background deliveries; default 32, from 1 to 256. Legacy synchronous sends have 4 separate slots |
 | `POSTGRES_PASSWORD` | Required Compose database superuser password |
 | `GATEWAY_DB_USER`, `GATEWAY_DB_PASSWORD` | Compose non-superuser role for the gateway and backup worker; see [database roles](#database-roles) |
 | `GATEWAY_BIND` | Compose host bind address; defaults to `127.0.0.1` |
@@ -32,6 +34,8 @@ GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.3` and `ghcr.io/ruivza/ko
 | `GATEWAY_MEM_LIMIT`, `POSTGRES_MEM_LIMIT`, `BACKUP_MEM_LIMIT` | Compose container memory limits; default `512m`, `1g` and `512m`. Process limits are fixed at 256, 256 and 128 |
 
 Administrator tokens and backup defaults are imported only during their first database initialization. Later environment changes do not replace stored settings; a `GATEWAY_ADMIN_TOKEN` that differs from the stored token only logs a startup warning. Without `GATEWAY_ADMIN_TOKEN`, the first token is written to `admin.token`. Rotating the admin token invalidates sessions and replaces that file with a one-line note, so it no longer holds a usable token.
+
+The gateway keeps application, channel, notification, access-policy, trusted-server and quota settings in memory and refreshes them whenever they change through the console or admin API. After editing those tables directly in PostgreSQL, restart the gateway.
 
 ## Network and process ownership
 
