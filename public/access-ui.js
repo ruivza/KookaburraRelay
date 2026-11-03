@@ -127,10 +127,11 @@ document.addEventListener('click', event => {
       action: button.dataset.serverAction,
     });
     await ctx.load();
+    // modal() escapes plain strings, so its content is built with html``, which escapes the credential.
     if (result.credential)
       ctx.modal(
         ctx.t('保存服务器凭证'),
-        `<p>${ctx.t('仅显示一次。放入业务 Server 的 GATEWAY_SERVER_CREDENTIAL，不要发送给客户端。此次操作已撤销该服务器的旧设备登记。')}</p><textarea readonly>${ctx.esc(result.credential)}</textarea>`,
+        ctx.html`<p>仅显示一次。放入业务 Server 的 GATEWAY_SERVER_CREDENTIAL，不要发送给客户端。此次操作已撤销该服务器的旧设备登记。</p><textarea readonly>${result.credential}</textarea>`,
         async () => {},
         ctx.t('关闭'),
       );
