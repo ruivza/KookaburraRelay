@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 — 2026-11-03
+
+- Count hourly rate limits in memory instead of the `limits` table. They reset on restart; daily quotas stay in PostgreSQL. At most 20,000 enrollment and confirmation keys are tracked; beyond that new enrollments get 503 `limit_capacity`, and other keys never fail on capacity.
+- Cache application, channel, notification, access-policy, trusted-server and quota settings in memory, refreshed on every change made through the console or admin API. After editing those tables directly in PostgreSQL, restart the gateway.
+- Lock the rows a send, registration, confirmation or revocation depends on instead of taking global locks, so requests for different devices run concurrently. The 10,000-job queue cap is now approximate under concurrency.
+- Cut database round trips from 39 to 8 per send and from 25 to 6 per delivery; a test pins at most 12 and 6.
+- Run 32 delivery workers by default (`GATEWAY_DELIVERY_WORKERS`), with 4 separate slots for synchronous legacy sends, and 20 pool connections (`GATEWAY_DATABASE_POOL_SIZE`). The ownership lock and cleanup use their own connections.
+- Serve console files from memory with an ETag; scripts and styles now send `Cache-Control: no-cache`.
+- Apply numbered migrations from `src/migrations/` instead of rerunning the whole schema on every start.
+- Store channel key IDs, team IDs, topics, environments, project IDs and client emails in plain columns and encrypt only the private key. Rows from earlier versions are converted on the first start.
+- Route requests through a declared route table; audit entries record the response status and duration, and logs record route patterns.
+- Run periodic jobs from one scheduler; `/metrics` reports failures and last success per job. Retention cleanup of expired registrations now cancels their queued work.
+- Treat nested transactions as savepoints and scope every advisory lock to the gateway's schema.
+- Escape values interpolated into console markup by default.
+- Format with Prettier and lint with ESLint in CI.
+
 ## 0.1.3 — 2026-11-03
 
 - Check each source's request budget before the global one, so one flooding address no longer rate-limits every other client.
