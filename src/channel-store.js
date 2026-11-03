@@ -1,6 +1,20 @@
 import { APNsChannel, channelCatalog } from './channels.js';
 import { FCMChannel } from './fcm.js';
 import { fail } from './util.js';
+
+// Channel identifiers are plain columns and `secret` seals only the private key. Rows from before 0.2.0 sealed the
+// whole configuration there; backfill() converts them at startup, and reads accept both.
+const columns = config => [
+  config.keyId ?? null,
+  config.teamId ?? null,
+  config.topic ?? null,
+  config.environment ?? null,
+  config.projectId ?? null,
+  config.clientEmail ?? null,
+];
+const sealedPart = (kind, config) => (kind === 'apns' ? { key: config.key } : { privateKey: config.privateKey });
+const converted = row => (row.kind === 'apns' ? row.topic != null : row.project_id != null);
+
 export class ChannelStore {
   constructor({ db, seal, open, providerFactory, fcmFactory, cache }) {
     Object.assign(this, { db, seal, open, providerFactory, fcmFactory, cache });
@@ -9,6 +23,44 @@ export class ChannelStore {
   async row(id, kind) {
     return await this.db.prepare('SELECT * FROM app_channels WHERE app_id=? AND kind=?').get(id, kind);
   }
+  // The full configuration, decrypting only the private key.
+  config(kind, row) {
+    const sealed = JSON.parse(this.open(row.secret));
+    return kind === 'apns'
+      ? {
+          key: sealed.key,
+          keyId: row.key_id ?? sealed.keyId,
+          teamId: row.team_id ?? sealed.teamId,
+          topic: row.topic ?? sealed.topic,
+          environment: row.environment ?? sealed.environment,
+        }
+      : {
+          projectId: row.project_id ?? sealed.projectId,
+          clientEmail: row.client_email ?? sealed.clientEmail,
+          privateKey: sealed.privateKey,
+        };
+  }
+  // Converts rows that still seal the whole configuration. Runs at startup, before requests are served.
+  async backfill() {
+    const rows = await this.db
+      .prepare(
+        "SELECT * FROM app_channels WHERE (kind='apns' AND topic IS NULL) OR (kind='fcm' AND project_id IS NULL)",
+      )
+      .all();
+    for (const row of rows) {
+      const config = this.config(row.kind, row);
+      await this.db
+        .prepare(
+          'UPDATE app_channels SET secret=?,key_id=?,team_id=?,topic=?,environment=?,project_id=?,client_email=? WHERE app_id=? AND kind=?',
+        )
+        .run(this.seal(JSON.stringify(sealedPart(row.kind, config))), ...columns(config), row.app_id, row.kind);
+    }
+    return rows.length;
+  }
+  // Decrypts every stored private key; restore verification uses it to prove the master key matches.
+  async verify() {
+    for (const row of await this.db.prepare('SELECT * FROM app_channels').all()) this.config(row.kind, row);
+  }
   // The configuration is decrypted on first use and then cached like the adapter built from it: a resolve that
   // hits the cache neither queries nor decrypts, and status checks that need only the flag never decrypt.
   cached(id, kind) {
@@ -16,7 +68,7 @@ export class ChannelStore {
       const row = await this.row(id, kind);
       if (!row) return null;
       let config;
-      return { enabled: !!row.enabled, config: () => (config ??= JSON.parse(this.open(row.secret))) };
+      return { enabled: !!row.enabled, config: () => (config ??= this.config(kind, row)) };
     });
   }
   async enabled(id, kind) {
@@ -25,8 +77,20 @@ export class ChannelStore {
   async describe(id, kind) {
     return this.present(kind, await this.row(id, kind));
   }
+  // Display fields come from the plain columns; nothing is decrypted once rows are converted.
   present(kind, row) {
-    const c = row ? JSON.parse(this.open(row.secret)) : {};
+    const c = !row
+      ? {}
+      : converted(row)
+        ? {
+            keyId: row.key_id,
+            teamId: row.team_id,
+            topic: row.topic,
+            environment: row.environment,
+            projectId: row.project_id,
+            clientEmail: row.client_email,
+          }
+        : this.config(kind, row);
     return {
       kind,
       enabled: !!row?.enabled,
@@ -45,7 +109,7 @@ export class ChannelStore {
     if (!channelCatalog.find(c => c.id === kind)?.implemented) fail(501, 'Push channel not implemented');
     if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'Invalid channel configuration');
     const row = await this.row(id, kind),
-      previous = row ? JSON.parse(this.open(row.secret)) : null;
+      previous = row ? this.config(kind, row) : null;
     let config;
     if (kind === 'apns') {
       config = {
@@ -62,17 +126,16 @@ export class ChannelStore {
         !['sandbox', 'production', 'both'].includes(config.environment)
       )
         fail(400, 'Invalid APNs configuration');
-      for (const other of await this.db
-        .prepare("SELECT app_id FROM app_channels WHERE kind='apns' AND app_id<>?")
-        .all(id)) {
-        const c = await this.describe(other.app_id, 'apns');
-        if (
-          c.teamId === config.teamId &&
-          c.topic === config.topic &&
-          (c.environment === 'both' || config.environment === 'both' || c.environment === config.environment)
-        )
-          fail(409, 'Apple topic and environment already assigned');
-      }
+      // A missing environment means both, as for delivery.
+      if (
+        await this.db
+          .prepare(
+            `SELECT 1 FROM app_channels WHERE kind='apns' AND app_id<>? AND team_id=? AND topic=?
+            AND (coalesce(environment,'both')='both' OR ?='both' OR environment=?)`,
+          )
+          .get(id, config.teamId, config.topic, config.environment, config.environment)
+      )
+        fail(409, 'Apple topic and environment already assigned');
     } else {
       const account = body.serviceAccount;
       if (account !== undefined && (!account || typeof account !== 'object' || account.type !== 'service_account'))
@@ -87,11 +150,12 @@ export class ChannelStore {
         !/^[^\s@]+@[^\s@]+\.iam\.gserviceaccount\.com$/.test(config.clientEmail)
       )
         fail(400, 'Invalid FCM service account');
-      for (const other of await this.db
-        .prepare("SELECT app_id FROM app_channels WHERE kind='fcm' AND app_id<>?")
-        .all(id))
-        if ((await this.describe(other.app_id, 'fcm')).projectId === config.projectId)
-          fail(409, 'Firebase project already assigned');
+      if (
+        await this.db
+          .prepare("SELECT 1 FROM app_channels WHERE kind='fcm' AND app_id<>? AND project_id=?")
+          .get(id, config.projectId)
+      )
+        fail(409, 'Firebase project already assigned');
     }
     if (body.enabled !== undefined && typeof body.enabled !== 'boolean') fail(400, 'Invalid channel state');
     try {
@@ -114,12 +178,20 @@ export class ChannelStore {
         : new FCMChannel(config);
   }
   async save(id, kind, prepared) {
-    const encrypted = this.seal(JSON.stringify(prepared.config));
     await this.db
       .prepare(
-        'INSERT INTO app_channels VALUES(?,?,?,?) ON CONFLICT(app_id,kind) DO UPDATE SET enabled=excluded.enabled,secret=excluded.secret',
+        `INSERT INTO app_channels(app_id,kind,enabled,secret,key_id,team_id,topic,environment,project_id,client_email)
+        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(app_id,kind) DO UPDATE SET enabled=excluded.enabled,secret=excluded.secret,
+        key_id=excluded.key_id,team_id=excluded.team_id,topic=excluded.topic,environment=excluded.environment,
+        project_id=excluded.project_id,client_email=excluded.client_email`,
       )
-      .run(id, kind, +prepared.enabled, encrypted);
+      .run(
+        id,
+        kind,
+        +prepared.enabled,
+        this.seal(JSON.stringify(sealedPart(kind, prepared.config))),
+        ...columns(prepared.config),
+      );
     this.cache.invalidate('channel', id);
   }
   async resolve(id, kind, environment) {

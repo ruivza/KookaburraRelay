@@ -294,3 +294,47 @@ test('public status reads configuration without decrypting secrets or scanning d
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('channel rows sealed whole by earlier versions are converted at startup and keep working', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'relay-channel-columns-'));
+  const options = {
+    dataDir: dir,
+    adminToken: admin,
+    autoStart: false,
+    providerFactory: config => ({ topic: config.topic, send() {}, close() {} }),
+  };
+  let app = await createGateway(options);
+  const stored = () => app.db.prepare("SELECT * FROM app_channels WHERE app_id='perch-mail' AND kind='apns'").get();
+  try {
+    await app.applications.update('perch-mail', { name: 'Mail', enabled: true, apns: apns('com.example.legacy') });
+    const current = await stored();
+    assert.deepEqual(Object.keys(JSON.parse(app.applications.channels.open(current.secret))), ['key']);
+    // Rewrite the row as 0.1.x stored it: the whole configuration sealed, no plain columns.
+    const whole = app.applications.channels.config('apns', current);
+    await app.db
+      .prepare(
+        "UPDATE app_channels SET secret=?,key_id=NULL,team_id=NULL,topic=NULL,environment=NULL WHERE app_id='perch-mail' AND kind='apns'",
+      )
+      .run(app.applications.channels.seal(JSON.stringify(whole)));
+    await app.close();
+    app = await createGateway(options);
+    const converted = await stored();
+    assert.deepEqual(
+      [converted.key_id, converted.team_id, converted.topic, converted.environment],
+      ['ABCDEFGHIJ', '0123456789', 'com.example.legacy', 'both'],
+    );
+    assert.deepEqual(JSON.parse(app.applications.channels.open(converted.secret)), { key: 'fixture-key' });
+    app.applications.channels.open = () => {
+      throw Error('Listing must not decrypt');
+    };
+    assert.equal((await app.applications.list())[0].apns.topic, 'com.example.legacy');
+    await app.applications.create({ id: 'second', name: 'Second' });
+    await assert.rejects(
+      app.applications.configureChannel('second', 'apns', apns('com.example.legacy')),
+      e => e.status === 409,
+    );
+  } finally {
+    await app.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

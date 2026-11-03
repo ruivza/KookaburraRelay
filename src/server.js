@@ -180,6 +180,7 @@ export async function createGateway({
     await backups.initialize();
     const cache = new ConfigCache(db);
     applications = new Applications({ db, seal, open, providerFactory, fcmFactory, now, cache });
+    await applications.channels.backfill();
     abuse = new AbuseProtection({ db, now, cache });
     await abuse.initialize();
     access = new AccessControl({ db, seal, open, now, abuse, appleVerifier, googleVerifier, cache });
