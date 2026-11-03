@@ -32,16 +32,13 @@ export class Applications {
     const row = await this.row(id),
       apns = await this.channels.describe(id, 'apns'),
       fcm = await this.channels.describe(id, 'fcm');
-    const hasJobs = true;
-    const counts = hasJobs
-      ? await this.db
-          .prepare(
-            `SELECT
+    const counts = await this.db
+      .prepare(
+        `SELECT
       coalesce(sum(CASE WHEN state='accepted' THEN 1 ELSE 0 END),0) accepted, coalesce(sum(CASE WHEN state IN ('failed','unknown') THEN 1 ELSE 0 END),0) failed
       FROM delivery_jobs WHERE app_id=?`,
-          )
-          .get(id)
-      : { accepted: 0, failed: 0 };
+      )
+      .get(id);
     return {
       id,
       notifications: await this.notifications(id),
@@ -99,9 +96,6 @@ export class Applications {
   validName(name) {
     return typeof name === 'string' && name.trim().length > 0 && name.length <= 100 && !/[\x00-\x1f]/.test(name);
   }
-  async transaction(action) {
-    return await this.db.transaction(action);
-  }
   async invalidate(id) {
     await this.db.prepare('UPDATE applications SET revision=? WHERE id=?').run(randomUUID(), id);
     await this.db.prepare('DELETE FROM registrations WHERE app_id=?').run(id);
@@ -115,7 +109,7 @@ export class Applications {
     const notifications =
       body.notifications === undefined ? previous : notificationSettings({ ...previous, ...body.notifications });
     const changed = row.enabled !== +body.enabled || prepared?.changed;
-    await this.transaction(async () => {
+    await this.db.transaction(async () => {
       await this.db
         .prepare('UPDATE applications SET name=?,enabled=? WHERE id=?')
         .run(body.name.trim(), +body.enabled, id);
@@ -137,7 +131,7 @@ export class Applications {
   async configureChannel(id, kind, body) {
     await this.row(id);
     const prepared = await this.channels.prepare(id, kind, body);
-    await this.transaction(async () => {
+    await this.db.transaction(async () => {
       await this.channels.save(id, kind, prepared);
       if (prepared.changed) await this.invalidate(id);
     });
@@ -147,7 +141,7 @@ export class Applications {
   async removeChannel(id, kind) {
     await this.row(id);
     if (!['apns', 'fcm'].includes(kind)) fail(404, 'Channel not found');
-    await this.transaction(async () => {
+    await this.db.transaction(async () => {
       await this.db.prepare('DELETE FROM app_channels WHERE app_id=? AND kind=?').run(id, kind);
       if (kind === 'apns') await this.db.prepare('UPDATE applications SET secret=NULL WHERE id=?').run(id);
       await this.invalidate(id);
@@ -157,7 +151,7 @@ export class Applications {
   }
   async remove(id) {
     await this.row(id);
-    await this.transaction(async () => {
+    await this.db.transaction(async () => {
       await this.invalidate(id);
       await this.db.prepare('DELETE FROM app_channels WHERE app_id=?').run(id);
       await this.db.prepare('DELETE FROM applications WHERE id=?').run(id);

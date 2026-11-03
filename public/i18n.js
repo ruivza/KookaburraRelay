@@ -310,7 +310,6 @@ Android 通道|Android channels
 结果未知|Unknown outcome
 已取消|Cancelled
 会话已结束|Your session has ended.
-管理令牌不正确或已失效，请使用网关 admin.token 中的令牌。|The token is incorrect or expired. Use the token from the gateway’s admin.token file.
 请求失败，请稍后重试|The request failed. Please try again.
 请求超时，请刷新确认操作结果。|The request timed out. Refresh to check whether it completed.
 ↻ 刷新|Refresh
@@ -570,7 +569,6 @@ HTTP 状态|HTTP status
 清晰掌控。|Everything in view.
 管理应用与推送通道，查看投递记录。|Manage your applications, channels, and deliveries.
 让每一次连接，都有迹可循|Every connection, accounted for
-令牌保存在网关数据目录的 admin.token 文件中，与邮件服务器管理员密码不同。|Find your token in admin.token in the gateway data directory. This is separate from your mail server password.
 令牌仅保留在当前页面内存中。|Your token stays in this page’s memory only.
 通道接受不等于设备送达 · 运行记录保留 30 天|Provider acceptance is not device delivery · 30-day history
 推送网关|Push gateway
