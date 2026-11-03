@@ -1,6 +1,5 @@
 import { AccessControl } from './access.js';
 import { Alerts } from './alerts.js';
-import { accessAPI } from './access-api.js';
 import { Backups } from './backups.js';
 import { loadEncryption } from './master-key.js';
 import { clientAddressResolver, rateKey } from './client-address.js';
@@ -14,45 +13,25 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Applications, defaultApp, validID } from './applications.js';
-import { allows, notificationAlgorithm } from './notification.js';
+import { allows } from './notification.js';
 import { DeliveryQueue } from './delivery.js';
 import { Observability } from './observability.js';
-import { adminAPI } from './admin-api.js';
-import { deviceAPI } from './device-api.js';
 import { AbuseProtection } from './abuse.js';
 import { RateLimiter } from './rate-limit.js';
 import { ConfigCache } from './config-cache.js';
+import { Scheduler } from './scheduler.js';
 import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
-// Logged routes and error codes never carry identifiers, bodies or messages.
-const routeOf = path => {
-  const route = path
-    .replace(/\/registrations\/[^/]+/, '/registrations/:id')
-    .replace(/\/apps\/[^/]+/, '/apps/:id')
-    .replace(/\/jobs\/[^/]+/, '/jobs/:id')
-    .replace(/\/devices\/[^/]+/, '/devices/:id');
-  return /^\/(v1|admin)\/(registrations|notify|validate|status|apps|overview|monitor|logs|jobs|devices|metrics)(\/(:id|confirm|channels|apns|fcm|test))*$/.test(
-    route,
-  )
-    ? route
-    : '/unknown';
-};
+import { match, routeName } from './router.js';
+import { publicRoutes } from './routes/public.js';
+import { securityRoutes } from './routes/security.js';
+import { backupRoutes } from './routes/backups.js';
+import { adminRoutes } from './routes/admin.js';
+import { deviceRoutes } from './routes/device.js';
+// Logged error codes never carry identifiers or messages; logged routes are route patterns.
 const errorCode = error => {
   const code = String(error?.code ?? error?.name ?? 'Error');
   return /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? code : 'Error';
 };
-// Prometheus text for [name, value or [[labels, value], ...], help?] gauges.
-const gauges = metrics =>
-  metrics
-    .map(
-      ([name, samples, help]) =>
-        (help ? `# HELP ${name} ${help}\n` : '') +
-        `# TYPE ${name} gauge\n` +
-        (Array.isArray(samples) ? samples : [['', samples]])
-          .map(([labels, value]) => `${name}${labels} ${value}\n`)
-          .join(''),
-    )
-    .join('');
-const attention = status => +!['ok', 'disabled'].includes(status);
 // The console is read once per gateway start and served from memory. Pages, scripts and styles revalidate on
 // every load (so an upgrade applies at once) and answer an unchanged ETag with 304.
 function loadConsole() {
@@ -112,7 +91,7 @@ export async function createGateway({
   const consoleFiles = loadConsole();
   const addressFor = clientAddressResolver(trustedProxies);
   const db = new Database(databaseUrl, databaseSchema, { poolSize: databasePoolSize });
-  let owner, applications, queue, monitor, maintenance, server, abuse, access, alerts;
+  let owner, applications, queue, monitor, maintenance, server, abuse, access, alerts, scheduler;
   let ownershipLost = false,
     initialized = false,
     shutdown;
@@ -127,9 +106,9 @@ export async function createGateway({
     let timer;
     const cleanup = async () => {
       try {
+        await scheduler?.close();
         await maintenance?.close();
         await alerts?.close();
-        await access?.close();
         await abuse?.close();
         await queue?.close();
         await closed;
@@ -201,10 +180,10 @@ export async function createGateway({
     await backups.initialize();
     const cache = new ConfigCache(db);
     applications = new Applications({ db, seal, open, providerFactory, fcmFactory, now, cache });
+    await applications.channels.backfill();
     abuse = new AbuseProtection({ db, now, cache });
     await abuse.initialize();
     access = new AccessControl({ db, seal, open, now, abuse, appleVerifier, googleVerifier, cache });
-    await access.initialize();
     queue = new DeliveryQueue({
       db,
       applications,
@@ -217,11 +196,24 @@ export async function createGateway({
       concurrency: deliveryWorkers,
     });
     monitor = new Observability({ db, now, queue, backups });
-    await monitor.initialize(autoStart);
+    await monitor.initialize();
     alerts = new Alerts({ db, seal, open, abuse, monitor, now, sender: alertSender });
-    await alerts.initialize(autoStart);
+    await alerts.initialize();
     maintenance = new Maintenance({ db, now, runId: monitor.runId });
-    await maintenance.initialize(autoStart);
+    await maintenance.initialize();
+    // The abuse cleanup job also applies every expiry rule in src/expiry.js.
+    scheduler = new Scheduler()
+      .every('abuse-cleanup', 60000, () => abuse.cleanup(), { onError: () => abuse.cleanupFailures++ })
+      .every('alerts', 60000, () => alerts.tick(), { onError: () => (alerts.workerFailed = true) })
+      .every('maintenance', 60000, () => maintenance.tick(), {
+        onError: () => console.error('Maintenance scheduler failed'),
+      })
+      .every('monitor-sample', 60000, () => monitor.sample(), {
+        onError: () => {
+          monitor.sampleFailures++;
+          console.error('Gateway monitoring sample failed');
+        },
+      });
     await db
       .prepare(
         "UPDATE delivery_jobs SET state='unknown',notification=NULL,reason='Interrupted',updated=? WHERE state='sending' OR (mode='legacy' AND state='queued')",
@@ -272,6 +264,32 @@ export async function createGateway({
       req.gatewayScope = { appId: value.app_id, channel: value.channel };
       return value;
     }
+    const services = {
+      db,
+      applications,
+      queue,
+      monitor,
+      security,
+      backups,
+      maintenance,
+      abuse,
+      access,
+      alerts,
+      scheduler,
+      now,
+      limit,
+      seal,
+      open,
+      bearer,
+      device,
+    };
+    const routes = [
+      ...publicRoutes(services),
+      ...securityRoutes(services),
+      ...backupRoutes(services),
+      ...adminRoutes(services),
+      ...deviceRoutes(services),
+    ];
     server = http.createServer(async (req, res) => {
       const requestId = randomUUID(),
         start = performance.now();
@@ -280,24 +298,30 @@ export async function createGateway({
         release;
       res.setHeader('X-Request-ID', requestId);
       res.once('finish', () => {
-        void (async () => {
-          const duration = performance.now() - start;
-          monitor.request(res.statusCode, duration);
-          if ((path.startsWith('/v1/') && req.method !== 'GET') || (res.statusCode >= 400 && res.statusCode !== 429)) {
-            await abuse.log(async () => {
-              const logApp = req.gatewayScope?.appId ?? body?.appId ?? (path.startsWith('/v1/') ? defaultApp : '');
-              await monitor.record({
-                kind: res.statusCode >= 400 ? 'error' : 'request',
-                action: req.method + ' ' + routeOf(path),
-                appId: validID(logApp) && (await cache.application(logApp)) ? logApp : '',
-                channel: req.gatewayScope?.channel || (['apns', 'fcm'].includes(body?.channel) ? body.channel : ''),
-                status: res.statusCode,
-                duration,
-                requestId,
+        // Detached: a response may finish while the handler's transaction context is still current.
+        void db
+          .detached(async () => {
+            const duration = performance.now() - start;
+            monitor.request(res.statusCode, duration);
+            if (
+              (path.startsWith('/v1/') && req.method !== 'GET') ||
+              (res.statusCode >= 400 && res.statusCode !== 429)
+            ) {
+              await abuse.log(async () => {
+                const logApp = req.gatewayScope?.appId ?? body?.appId ?? (path.startsWith('/v1/') ? defaultApp : '');
+                await monitor.record({
+                  kind: res.statusCode >= 400 ? 'error' : 'request',
+                  action: req.method + ' ' + routeName(routes, path),
+                  appId: validID(logApp) && (await cache.application(logApp)) ? logApp : '',
+                  channel: req.gatewayScope?.channel || (['apns', 'fcm'].includes(body?.channel) ? body.channel : ''),
+                  status: res.statusCode,
+                  duration,
+                  requestId,
+                });
               });
-            });
-          }
-        })().catch(() => console.error('Gateway request audit could not be stored'));
+            }
+          })
+          .catch(() => console.error('Gateway request audit could not be stored'));
       });
       const send = (status, value) => {
         if (res.destroyed || res.headersSent) return;
@@ -338,7 +362,8 @@ export async function createGateway({
           await security.authenticate(bearer(req));
           await limit('admin:' + req.rateKey, 600, 60000);
         }
-        if (path === '/monitor/report' || path === '/metrics') {
+        // Monitor routes require the monitor token whatever the method, before the body is read.
+        if (routes.some(entry => entry.auth === 'monitor' && entry.regex.test(path))) {
           await limit('probe:' + req.rateKey, 120, 60000);
           if (!timingSafeEqual(Buffer.from(sha256Hex(bearer(req))), Buffer.from(sha256Hex(monitorToken))))
             fail(401, 'Unauthorized');
@@ -358,187 +383,29 @@ export async function createGateway({
           }
           if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'Invalid JSON');
         }
-        if (path === '/auth/login' && req.method === 'POST') {
-          await limit('login:' + req.rateKey, 20, 60000);
-          return send(200, await security.login(body));
-        }
-        if (path.startsWith('/admin/security')) {
-          if (path === '/admin/security' && req.method === 'GET') return send(200, await security.status());
-          if (req.method === 'POST') {
-            await limit('security:' + req.rateKey, 10, 60000);
-            const actions = {
-              '/admin/security/token': 'changeToken',
-              '/admin/security/setup': 'setup',
-              '/admin/security/confirm': 'confirm',
-              '/admin/security/disable': 'disable',
-            };
-            const action = actions[path];
-            if (action) {
-              const result = await security[action](body);
-              await monitor.record({ kind: 'audit', action: 'security.' + action, requestId });
-              return send(200, result);
-            }
-          }
-        }
-        if (path.startsWith('/admin/backups')) {
-          if (path === '/admin/backups' && req.method === 'GET') return send(200, await backups.status());
-          if (['PUT', 'POST'].includes(req.method)) {
-            await limit('backup-admin:' + req.rateKey, 10, 60000);
-            let result, action;
-            if (path === '/admin/backups' && req.method === 'PUT') {
-              result = await backups.save(body);
-              action = 'backup.settings';
-            }
-            if (path === '/admin/backups/run' && req.method === 'POST') {
-              result = await backups.enqueue();
-              action = 'backup.run';
-            }
-            if (path === '/admin/backups/test' && req.method === 'POST') {
-              result = await backups.enqueue('test');
-              action = 'backup.test';
-            }
-            const retry = path.match(/^\/admin\/backups\/([a-f0-9-]{36})\/retry$/);
-            if (retry && req.method === 'POST') {
-              result = await backups.retry(retry[1]);
-              action = 'backup.retry';
-            }
-            if (action) {
-              await monitor.record({ kind: 'audit', action, requestId });
-              return send(req.method === 'PUT' ? 200 : 202, result);
-            }
-          }
-        }
-        if (path === '/admin/settings' && req.method === 'GET') return send(200, await maintenance.state());
-        if (path === '/admin/settings' && req.method === 'PUT') {
-          const result = await maintenance.save(body.previewId);
-          await monitor.record({ kind: 'audit', action: 'retention.update', requestId });
-          return send(200, result);
-        }
-        if (path === '/admin/cleanup/preview' && req.method === 'POST')
-          return send(200, await maintenance.preview(body));
-        if (path === '/admin/cleanup/run' && req.method === 'POST') {
-          const result = await maintenance.manual(body.previewId);
-          await monitor.record({ kind: 'audit', action: 'cleanup.manual', requestId });
-          return send(202, result);
-        }
-        if (path === '/admin/logout' && req.method === 'POST') {
-          await security.logout(bearer(req));
-          return send(200, { signedOut: true });
-        }
-        if (path === '/admin/abuse' && req.method === 'GET') return send(200, abuse.state());
-        if (path === '/admin/abuse' && req.method === 'PUT') {
-          const result = await abuse.save(body);
-          await monitor.record({ kind: 'audit', action: 'abuse.settings', requestId });
-          return send(200, result);
-        }
-        if (
-          path.startsWith('/admin/') &&
-          (await accessAPI({
-            path,
-            method: req.method,
-            body,
-            access,
-            abuse,
-            alerts,
-            monitor,
-            send,
-            requestId,
-          }))
-        )
-          return;
-        if (path === '/v1/access' && req.method === 'GET')
-          return send(200, await access.publicPolicy(url.searchParams.get('appId') || defaultApp));
-        if (path === '/v1/server-tickets' && req.method === 'POST')
-          return send(200, await access.ticket(bearer(req), body));
-        if (path === '/v1/integrity/challenges' && req.method === 'POST')
-          return send(200, await access.challenge(body, req.rateKey));
-        if (path === '/v1/status' && req.method === 'GET') {
-          const appId = new URL(req.url, 'http://localhost').searchParams.get('appId') || defaultApp;
-          const { ready, kinds } = await applications.publicStatus(appId, url.searchParams.get('channel') || 'apns');
-          return send(200, {
-            protocol: 1,
-            appId,
-            ready,
-            notificationEncryption: kinds.includes('encrypted_alert') ? notificationAlgorithm : null,
-            kinds,
-          });
-        }
-        if (path === '/metrics' && req.method === 'GET') {
-          const v = await monitor.overview();
-          const q = await monitor.queueStatus(),
-            b = await backups.summary();
-          res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4', 'Cache-Control': 'no-store' });
-          return res.end(
-            gauges([
-              ['perch_gateway_queue_oldest_wait_seconds', q.oldestWaitSeconds],
-              ['perch_gateway_queue_overdue', q.overdue],
-              ['perch_gateway_sending_stuck', q.stuck],
-              ['perch_gateway_worker_error', +q.workerError],
-              ['perch_gateway_monitor_last_sample_seconds', (monitor.lastSampleAt ?? 0) / 1000],
-              ['perch_gateway_backup_worker_online', +b.workerOnline],
-              [
-                'perch_gateway_backup_last_success_seconds',
-                [
-                  ['{target="local"}', (b.local.lastSuccess ?? 0) / 1000],
-                  ['{target="remote"}', (b.remote.lastSuccess ?? 0) / 1000],
-                ],
-              ],
-              [
-                'perch_gateway_backup_attention',
-                [
-                  ['{target="local"}', attention(b.local.status)],
-                  ['{target="remote"}', attention(b.remote.status)],
-                ],
-              ],
-              ['perch_gateway_uptime_seconds', v.uptime / 1000, 'Current process uptime'],
-              ['perch_gateway_queue_depth', v.queue],
-              ['perch_gateway_memory_bytes', v.memory.rss],
-              [
-                'perch_gateway_tasks_24h',
-                [
-                  ['{state="accepted"}', v.counts.accepted],
-                  ['{state="failed_or_unknown"}', v.counts.failed],
-                ],
-              ],
-            ]),
-          );
-        }
-        if (path === '/monitor/report' && req.method === 'POST') return send(200, await monitor.report(body));
-        if (path.startsWith('/admin/'))
-          return await adminAPI({
-            path,
-            method: req.method,
-            body,
-            params: url.searchParams,
-            applications,
-            db,
-            queue,
-            monitor,
-            send,
-            now,
+        const found = match(routes, req.method, path);
+        if (!found) return send(404, { error: 'Not found' });
+        const { route: entry, params } = found;
+        if (entry.limit) await limit(entry.limit[0] + ':' + req.rateKey, entry.limit[1], entry.limit[2]);
+        const context = { req, res, path, body, params, query: url.searchParams, send, requestId };
+        const result = await entry.handler(context);
+        if (result === undefined) return;
+        const status = result.status ?? 200;
+        if (entry.audit)
+          await monitor.record({
+            kind: 'audit',
+            action: typeof entry.audit === 'function' ? entry.audit(context) : entry.audit,
+            appId: result.appId ?? '',
+            channel: result.channel ?? '',
+            status,
+            duration: performance.now() - start,
             requestId,
           });
-        return await deviceAPI({
-          req,
-          path,
-          body,
-          send,
-          applications,
-          db,
-          queue,
-          now,
-          limit,
-          seal,
-          open,
-          bearer,
-          device,
-          abuse,
-          access,
-        });
+        return send(status, result.value);
       } catch (error) {
         if (!error?.status)
           console.error(
-            `Gateway request failed requestId=${requestId} method=${req.method} route=${routeOf(path)} error=${errorCode(error)}`,
+            `Gateway request failed requestId=${requestId} method=${req.method} route=${routeName(routes, path)} error=${errorCode(error)}`,
           );
         if (error.retryAfter && !res.headersSent) res.setHeader('Retry-After', String(error.retryAfter));
         send(error.status || 500, {
@@ -553,7 +420,10 @@ export async function createGateway({
     server.headersTimeout = 10000;
     if (ownershipLost) throw Error('Database ownership lost during startup');
     initialized = true;
-    if (autoStart) queue.start();
+    if (autoStart) {
+      queue.start();
+      scheduler.start();
+    }
     return {
       server,
       db,
@@ -568,7 +438,9 @@ export async function createGateway({
       abuse,
       access,
       alerts,
+      scheduler,
       rateLimits,
+      routes,
       close,
     };
   } catch (error) {

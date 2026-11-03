@@ -1,5 +1,5 @@
 // Only developer-authored strings and template literal segments are translated.
-// Values interpolated into html (application names, IDs, logs) remain untouched.
+// Values interpolated into html (application names, IDs, logs) are escaped, never translated.
 const english = Object.fromEntries(
   `
 名称|Name
@@ -628,8 +628,26 @@ function initialLanguage() {
 export let language = initialLanguage();
 export const locale = () => (language === 'zh' ? 'zh-CN' : 'en-US');
 export const t = source => translate(String(source), language);
+// Markup built by html`` or vouched for with raw(). String() or a template literal yields the markup.
+class SafeHtml {
+  constructor(markup) {
+    this.markup = markup;
+  }
+  toString() {
+    return this.markup;
+  }
+}
+const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+export const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => entities[c]);
+// Only for markup produced by code that escapes its own data, such as chart SVG; never for data.
+export const raw = markup => new SafeHtml(String(markup ?? ''));
+const interpolate = value =>
+  value instanceof SafeHtml ? value.markup : Array.isArray(value) ? value.map(interpolate).join('') : escapeHtml(value);
+// Static segments are translated; interpolated values are escaped unless they are html`` or raw() results.
 export function html(strings, ...values) {
-  return strings.reduce((result, segment, i) => result + t(segment) + (i < values.length ? values[i] : ''), '');
+  return new SafeHtml(
+    strings.reduce((result, segment, i) => result + t(segment) + (i < values.length ? interpolate(values[i]) : ''), ''),
+  );
 }
 export function setLanguage(next) {
   if (!['zh', 'en'].includes(next)) return;

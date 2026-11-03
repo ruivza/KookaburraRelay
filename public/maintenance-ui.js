@@ -52,7 +52,7 @@ document.addEventListener('submit', e => {
   const form = e.target;
   if (!form.matches('[data-maintenance]')) return;
   e.preventDefault();
-  const { api, action, modal, t, notice } = ctx;
+  const { api, action, modal, t, html, notice } = ctx;
   void action(async () => {
     const data = new FormData(form),
       mode = form.dataset.maintenance,
@@ -65,12 +65,13 @@ document.addEventListener('submit', e => {
       if (data.get('scope') === 'date') body.before = new Date(data.get('before')).getTime();
     }
     const preview = await api('/admin/cleanup/preview', 'POST', body);
-    const summary = Object.entries(preview.counts)
-      .map(([k, n]) => `<div class="cleanup-count"><span>${t(labels[k])}</span><strong>${n}</strong></div>`)
-      .join('');
+    // modal() escapes plain strings, so its content is built with html``.
+    const summary = Object.entries(preview.counts).map(
+      ([k, n]) => html`<div class="cleanup-count"><span>${t(labels[k])}</span><strong>${n}</strong></div>`,
+    );
     modal(
       t(mode === 'settings' ? '确认保留周期' : '确认清理'),
-      `<p class="help">${t(mode === 'settings' ? (body.settings.enabled ? '以下记录将符合新的清理规则，保存后在下次计划执行。预览有效期为 5 分钟。' : '保存后将停用自动清理，不会执行下方预览的清理。预览有效期为 5 分钟。') : '以下记录将被永久删除。预览有效期为 5 分钟。')}</p>${summary}<label class="check"><input type="checkbox" data-cleanup-confirm required>${t('我已确认清理范围')}</label>`,
+      html`<p class="help">${t(mode === 'settings' ? (body.settings.enabled ? '以下记录将符合新的清理规则，保存后在下次计划执行。预览有效期为 5 分钟。' : '保存后将停用自动清理，不会执行下方预览的清理。预览有效期为 5 分钟。') : '以下记录将被永久删除。预览有效期为 5 分钟。')}</p>${summary}<label class="check"><input type="checkbox" data-cleanup-confirm required>${t('我已确认清理范围')}</label>`,
       async () => {
         await api(
           mode === 'settings' ? '/admin/settings' : '/admin/cleanup/run',

@@ -553,3 +553,21 @@ test('a revocation racing a send leaves no queued work for the revoked registrat
     await f.close();
   }
 });
+
+test('retention cleanup of expired registrations cancels their queued work', async () => {
+  const f = await fixture();
+  try {
+    const g = await f.enroll(1);
+    assert.equal((await f.call('/v1/jobs', scope(g, 'expiry-request-01'), g.credential)).status, 202);
+    f.advance(31 * 86400000);
+    const preview = await f.app.maintenance.preview({ types: ['expired'] });
+    assert.equal(preview.counts.expired >= 1, true);
+    await f.app.maintenance.manual(preview.previewId);
+    await f.app.maintenance.work;
+    assert.equal(await pendingJobs(f), 0);
+    const job = await f.app.db.prepare('SELECT state,reason FROM delivery_jobs').get();
+    assert.deepEqual({ ...job }, { state: 'cancelled', reason: 'RegistrationExpired' });
+  } finally {
+    await f.close();
+  }
+});

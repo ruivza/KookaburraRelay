@@ -71,7 +71,8 @@ export class DeliveryQueue {
       this.wakeScheduled = true;
       queueMicrotask(() => {
         this.wakeScheduled = false;
-        if (!this.stopping) void this.poll();
+        // The drain outlives whatever request or transaction woke it.
+        if (!this.stopping) void this.db.detached(() => this.poll());
       });
     }
   }

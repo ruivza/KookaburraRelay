@@ -29,11 +29,11 @@ CI supplies PostgreSQL 18 and `age`. Browser fixtures in `test/` use simulated p
 
 | Files | Responsibility |
 | --- | --- |
-| `src/server.js`, `src/*-api.js` | HTTP routes, authentication, lifecycle |
+| `src/server.js`, `src/router.js`, `src/routes/` | Startup and shutdown; the route table (method, path, authentication, rate limit, audit action) |
 | `src/applications.js`, `src/channel-store.js`, `src/channels.js`, `src/apns.js`, `src/fcm.js` | Application scopes, credentials, vendor adapters |
-| `src/device-api.js`, `src/notification.js`, `src/delivery.js` | Registration proof, payload validation, delivery queue |
+| `src/routes/device.js`, `src/notification.js`, `src/delivery.js` | Registration proof, payload validation, delivery queue |
 | `src/access.js`, `src/integrity.js`, `src/security.js`, `src/abuse.js` | Server approval, platform proof, admin security, resource limits |
-| `src/database.js`, `src/schema.sql`, `src/master-key.js` | PostgreSQL transactions, migrations, encryption |
+| `src/database.js`, `src/migrations/`, `src/master-key.js`, `src/config-cache.js`, `src/rate-limit.js` | PostgreSQL transactions, numbered migrations, encryption, configuration cache, in-memory rate limits |
 | `src/observability.js`, `src/alerts.js`, `src/maintenance.js` | Metrics, webhooks, retention |
 | `src/backups.js`, `src/backup-worker.js`, `src/s3-storage.js`, `ops/` | Backup scheduling, encryption, upload, restore verification |
 | `public/index.html`, `public/admin.js`, `public/*-ui.js`, `public/i18n.js`, `public/style.css` | Console; no frontend build step |

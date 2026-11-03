@@ -3,6 +3,7 @@ import { storageSettings, validateTarget } from './storage-target.js';
 export { validateTarget } from './storage-target.js';
 import { validateRecipient } from './backup-crypto.js';
 import { fail } from './util.js';
+import { SettingsStore } from './settings-store.js';
 export const backupDefaults = {
   enabled: false,
   endpoint: '',
@@ -16,6 +17,7 @@ export const backupDefaults = {
 export class Backups {
   constructor({ db, seal, open, security, now = Date.now, validateKey = validateRecipient }) {
     Object.assign(this, { db, seal, open, security, now, validateKey });
+    this.store = new SettingsStore(db, 'backup_settings');
   }
   async initialize() {
     if (await this.row()) return;
@@ -30,18 +32,14 @@ export class Backups {
       retention > 365
     )
       throw Error('Invalid initial backup schedule');
-    await this.db.prepare('INSERT INTO backup_settings VALUES(1,?,NULL,?) ON CONFLICT DO NOTHING').run(
-      JSON.stringify({
-        ...backupDefaults,
-        intervalHours: interval,
-        retentionDays: retention,
-        revision: randomUUID(),
-      }),
-      this.now(),
-    );
+    await this.store.initialize({
+      settings: { ...backupDefaults, intervalHours: interval, retentionDays: retention, revision: randomUUID() },
+      secret: null,
+      next_at: this.now(),
+    });
   }
   async row() {
-    const row = await this.db.prepare('SELECT * FROM backup_settings WHERE id=1').get();
+    const row = await this.store.read();
     return row ? { ...row, settings: storageSettings(row.settings) } : row;
   }
   async status() {
@@ -148,7 +146,7 @@ export class Backups {
       fail(400, 'Invalid S3 Secret Access Key');
     await this.db.transaction(async () => {
       await this.security.reauthenticate(await this.security.row(), body);
-      const row = await this.db.prepare('SELECT * FROM backup_settings WHERE id=1 FOR UPDATE').get();
+      const row = await this.store.read({ lock: true });
       if (body.revision !== row.settings.revision) fail(409, 'Backup settings changed; refresh and try again');
       if (await this.db.prepare("SELECT 1 FROM backup_jobs WHERE state='running'").get())
         fail(409, 'Backup worker is busy; wait before changing settings');
@@ -166,9 +164,7 @@ export class Backups {
       const secret = replacement ? this.seal(replacement) : row.secret;
       if (hasTarget && !secret) fail(400, 'S3 Secret Access Key is required');
       settings.revision = randomUUID();
-      await this.db
-        .prepare('UPDATE backup_settings SET settings=?,secret=?,next_at=? WHERE id=1')
-        .run(JSON.stringify(settings), secret, this.now() + settings.intervalHours * 3600000);
+      await this.store.write({ settings, secret, next_at: this.now() + settings.intervalHours * 3600000 });
       await this.db
         .prepare(
           "UPDATE backup_jobs SET state='cancelled',finished=?,error='ConfigurationChanged' WHERE state IN ('queued','retrying')",
@@ -180,7 +176,7 @@ export class Backups {
   async enqueue(kind = 'backup', source = 'manual') {
     if (!['backup', 'test'].includes(kind)) fail(400, 'Invalid backup operation');
     return this.db.transaction(async () => {
-      const row = await this.db.prepare('SELECT * FROM backup_settings WHERE id=1 FOR UPDATE').get();
+      const row = await this.store.read({ lock: true });
       if (kind === 'test') {
         validateTarget(row.settings);
         if (!row.secret || !row.settings.recipient) fail(400, 'Save storage credentials and public key first');
@@ -213,7 +209,7 @@ export class Backups {
   }
   async retry(id) {
     return this.db.transaction(async () => {
-      const row = await this.db.prepare('SELECT * FROM backup_settings WHERE id=1 FOR UPDATE').get();
+      const row = await this.store.read({ lock: true });
       const job = await this.db.prepare('SELECT * FROM backup_jobs WHERE id=? FOR UPDATE').get(id);
       if (!job || !['failed', 'retrying'].includes(job.state)) fail(409, 'This backup cannot be retried');
       if (job.config_revision !== row.settings.revision) fail(409, 'Backup target changed; create a new backup');

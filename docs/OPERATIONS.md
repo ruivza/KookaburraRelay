@@ -5,13 +5,13 @@
 Download the source archive, gateway image archive and backup image archive for your platform from [Releases](https://github.com/ruivza/KookaburraRelay/releases). Verify them against `SHA256SUMS`, extract the source, then load both images:
 
 ```sh
-docker load -i kookaburra-relay-0.1.3-linux-amd64.tar.gz
-docker load -i kookaburra-relay-backup-0.1.3-linux-amd64.tar.gz
+docker load -i kookaburra-relay-0.2.0-linux-amd64.tar.gz
+docker load -i kookaburra-relay-backup-0.2.0-linux-amd64.tar.gz
 ```
 
-Use `arm64` archives on ARM hosts. For a fresh installation, run `umask 077; cp .env.example .env` and replace `POSTGRES_PASSWORD` and `GATEWAY_DB_PASSWORD` with two different long random hex passwords. Set `GATEWAY_IMAGE=kookaburra-relay:0.1.3` and `GATEWAY_BACKUP_IMAGE=kookaburra-relay-backup:0.1.3`, then run `docker compose up -d --no-build --wait`. Keep an existing deployment's `.env` and data volumes.
+Use `arm64` archives on ARM hosts. For a fresh installation, run `umask 077; cp .env.example .env` and replace `POSTGRES_PASSWORD` and `GATEWAY_DB_PASSWORD` with two different long random hex passwords. Set `GATEWAY_IMAGE=kookaburra-relay:0.2.0` and `GATEWAY_BACKUP_IMAGE=kookaburra-relay-backup:0.2.0`, then run `docker compose up -d --no-build --wait`. Keep an existing deployment's `.env` and data volumes.
 
-GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.3` and `ghcr.io/ruivza/kookaburrarelay-backup:0.1.3`. Their package visibility must be public for anonymous pulls; repository visibility does not change it automatically.
+GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.2.0` and `ghcr.io/ruivza/kookaburrarelay-backup:0.2.0`. Their package visibility must be public for anonymous pulls; repository visibility does not change it automatically.
 
 ## Configuration
 
@@ -86,7 +86,7 @@ States are `queued`, `sending`, `retrying`, `accepted`, `failed`, `unknown`, and
 
 ## Monitoring and retention
 
-`/healthz` checks the process and PostgreSQL, not provider delivery. `/metrics` requires the separate `monitor.token`. It exposes queue, process, delivery, sampling, and backup metrics. Vendor acceptance rates exclude waiting, cancelled, and retrying jobs.
+`/healthz` checks the process and PostgreSQL, not provider delivery. `/metrics` requires the separate `monitor.token`. It exposes queue, process, delivery, sampling, and backup metrics, and for each periodic job (abuse and expiry cleanup, alerts, maintenance, monitor sampling) its failures since start and last success. Vendor acceptance rates exclude waiting, cancelled, and retrying jobs.
 
 Run `scripts/uptime-probe.mjs` from the repository root on a separate Node.js 24+ host to monitor outages:
 

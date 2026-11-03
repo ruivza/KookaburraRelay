@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY);
+-- Schema as of 0.1.3. Every statement is idempotent, so it also completes databases created by any 0.1.x release.
 CREATE TABLE IF NOT EXISTS configuration(id INTEGER PRIMARY KEY CHECK(id=1),secret TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS applications(id TEXT PRIMARY KEY,name TEXT NOT NULL,enabled INTEGER NOT NULL,revision TEXT NOT NULL,secret TEXT);
 CREATE TABLE IF NOT EXISTS app_channels(app_id TEXT NOT NULL,kind TEXT NOT NULL,enabled INTEGER NOT NULL,secret TEXT NOT NULL,PRIMARY KEY(app_id,kind));
@@ -20,7 +20,6 @@ CREATE TABLE IF NOT EXISTS gateway_probes(monitor TEXT NOT NULL,time BIGINT NOT 
 CREATE INDEX IF NOT EXISTS gateway_probe_time ON gateway_probes(time);
 CREATE TABLE IF NOT EXISTS admin_security(id INTEGER PRIMARY KEY CHECK(id=1),token_hash TEXT NOT NULL,totp_secret TEXT,last_step BIGINT NOT NULL DEFAULT -1,pending_secret TEXT,pending_until BIGINT,recovery_hashes JSONB NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS admin_sessions(hash TEXT PRIMARY KEY,expires BIGINT NOT NULL);
-INSERT INTO schema_migrations VALUES(1) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS maintenance_settings(id INTEGER PRIMARY KEY CHECK(id=1),settings JSONB NOT NULL,next_at BIGINT NOT NULL);
 CREATE TABLE IF NOT EXISTS maintenance_runs(id TEXT PRIMARY KEY,started BIGINT NOT NULL,finished BIGINT,source TEXT NOT NULL,status TEXT NOT NULL,deleted JSONB NOT NULL DEFAULT '{}',error TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS maintenance_previews(id TEXT PRIMARY KEY,expires BIGINT NOT NULL,payload JSONB NOT NULL);

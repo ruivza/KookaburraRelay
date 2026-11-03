@@ -52,6 +52,7 @@ try {
  writeFileSync(dataDir+"/master.key",readFileSync(0),{mode:0o600});
  app=await createGateway({databaseUrl:url.toString(),databaseSchema:"relay",dataDir,adminToken:"restore-verification-only-".repeat(3),autoStart:false});
  await app.applications.list();
+ await app.applications.channels.verify();
  console.log("Restore verified: PostgreSQL dump, master-key binding and application decryption");
 } finally {await app?.close();rmSync(dataDir,{recursive:true,force:true});}
 ' "$restore_db" < "$stage/master.key"

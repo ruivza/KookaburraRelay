@@ -12,6 +12,7 @@ function fixture(count = 6) {
     autoStart: false,
     concurrency: 2,
     db: {
+      detached: fn => fn(),
       prepare() {
         return {
           all: async (...args) =>

@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { fail } from './util.js';
+import { expireRegistrations } from './expiry.js';
+import { SettingsStore } from './settings-store.js';
 const DAY = 86400000;
 export const defaults = {
   enabled: true,
@@ -16,6 +18,7 @@ const kinds = ['requests', 'errors', 'audit', 'jobs', 'metrics', 'probes', 'runs
 export class Maintenance {
   constructor({ db, now = Date.now, runId }) {
     Object.assign(this, { db, now, runId });
+    this.store = new SettingsStore(db, 'maintenance_settings');
     this.busy = false;
   }
   validate(value) {
@@ -29,22 +32,16 @@ export class Maintenance {
     }
     return settings;
   }
-  async initialize(autoStart) {
-    await this.db
-      .prepare('INSERT INTO maintenance_settings VALUES(1,?,?) ON CONFLICT DO NOTHING')
-      .run(JSON.stringify(defaults), this.now() + defaults.intervalHours * 3600000);
+  async initialize() {
+    await this.store.initialize({ settings: defaults, next_at: this.now() + defaults.intervalHours * 3600000 });
     await this.db
       .prepare(
         "UPDATE maintenance_runs SET status='failed',finished=?,error='Interrupted by restart' WHERE status='running'",
       )
       .run(this.now());
-    if (autoStart)
-      this.timer = setInterval(() => {
-        void this.tick().catch(() => console.error('Maintenance scheduler failed'));
-      }, 60000).unref();
   }
   async state() {
-    const row = await this.db.prepare('SELECT * FROM maintenance_settings WHERE id=1').get();
+    const row = await this.store.read();
     return {
       settings: row.settings,
       nextAt: row.settings.enabled ? row.next_at : null,
@@ -113,14 +110,12 @@ export class Maintenance {
   }
   async save(id) {
     const p = await this.consume(id, 'settings');
-    await this.db
-      .prepare('UPDATE maintenance_settings SET settings=?,next_at=? WHERE id=1')
-      .run(JSON.stringify(p.settings), this.now() + p.settings.intervalHours * 3600000);
+    await this.store.write({ settings: p.settings, next_at: this.now() + p.settings.intervalHours * 3600000 });
     return this.state();
   }
   async tick() {
     if (this.busy || this.stopping) return;
-    const row = await this.db.prepare('SELECT * FROM maintenance_settings WHERE id=1').get();
+    const row = await this.store.read();
     if (row.settings.enabled && row.next_at <= this.now()) await this.start(this.plan(row.settings), 'automatic');
   }
   async manual(id) {
@@ -146,9 +141,11 @@ export class Maintenance {
       await this.db
         .prepare("UPDATE maintenance_settings SET next_at=?+(settings->>'intervalHours')::bigint*3600000 WHERE id=1")
         .run(this.now());
-      this.work = this.execute(id, plan, client).finally(() => {
-        this.busy = false;
-      });
+      this.work = this.db
+        .detached(() => this.execute(id, plan, client))
+        .finally(() => {
+          this.busy = false;
+        });
       return { id, status: 'running' };
     } catch (error) {
       if (locked) await client.query('SELECT pg_advisory_unlock(hashtext(current_schema()),72841105)').catch(() => {});
@@ -168,14 +165,20 @@ export class Maintenance {
             partial = true;
             break;
           }
-          const result = await this.db
-            .prepare(
-              `WITH batch AS (SELECT ctid FROM ${p.table} WHERE ${p.where} LIMIT 1000 FOR UPDATE SKIP LOCKED) DELETE FROM ${p.table} WHERE ctid IN (SELECT ctid FROM batch)`,
-            )
-            .run(...p.values);
-          deleted[p.kind] += result.changes;
+          // Expired registrations leave together with their work, as everywhere else they expire.
+          const changes =
+            p.table === 'registrations'
+              ? await expireRegistrations(this.db, p.values[0])
+              : (
+                  await this.db
+                    .prepare(
+                      `WITH batch AS (SELECT ctid FROM ${p.table} WHERE ${p.where} LIMIT 1000 FOR UPDATE SKIP LOCKED) DELETE FROM ${p.table} WHERE ctid IN (SELECT ctid FROM batch)`,
+                    )
+                    .run(...p.values)
+                ).changes;
+          deleted[p.kind] += changes;
           await this.db.prepare('UPDATE maintenance_runs SET deleted=? WHERE id=?').run(JSON.stringify(deleted), id);
-          if (result.changes < 1000) break;
+          if (changes < 1000) break;
           if (i === 199) partial = true;
           await new Promise(resolve => setTimeout(resolve, 20));
         }
@@ -205,7 +208,6 @@ export class Maintenance {
   }
   async close() {
     this.stopping = true;
-    clearInterval(this.timer);
     await this.work;
   }
 }
