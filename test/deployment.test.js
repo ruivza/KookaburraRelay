@@ -135,13 +135,11 @@ test('missing and mismatched master keys fail startup without replacing data or 
   }
 });
 
-test('the duplicate APNs key in applications.secret is no longer written and is cleared only after the master key check', async () => {
+test('a database without the key sentinel opens only with the master key that decrypts its channels', async () => {
   const { Database } = await import('../src/database.js');
-  const dataDir = mkdtempSync('/tmp/relay-duplicate-key-test-');
+  const dataDir = mkdtempSync('/tmp/relay-key-binding-test-');
   let app;
   const options = { dataDir, adminToken, autoStart: false, providerFactory: () => ({ send() {}, close() {} }) };
-  const duplicate = async () =>
-    (await app.db.prepare("SELECT secret FROM applications WHERE id='perch-mail'").get()).secret;
   try {
     app = await createGateway(options);
     const schema = app.db.schema;
@@ -152,28 +150,25 @@ test('the duplicate APNs key in applications.secret is no longer written and is 
         privateKey: 'fixture',
         keyId: 'ABCDEFGHIJ',
         teamId: '0123456789',
-        topic: 'com.example.duplicate',
+        topic: 'com.example.binding',
         environment: 'both',
       },
     });
-    assert.equal(await duplicate(), null);
-    // A legacy install without the key sentinel still has its old duplicate authenticated before it is dropped.
+    const sealed = (await app.db.prepare("SELECT secret FROM app_channels WHERE app_id='perch-mail'").get()).secret;
+    // A legacy install without the sentinel: its stored ciphertext authenticates the key.
     await app.db.exec('DELETE FROM gateway_key_check');
     await app.db
-      .prepare("UPDATE applications SET secret=? WHERE id='perch-mail'")
+      .prepare("UPDATE app_channels SET secret=? WHERE app_id='perch-mail'")
       .run(Buffer.alloc(48).toString('base64'));
     await app.close();
     await assert.rejects(createGateway(options), /does not match/);
     const control = new Database(process.env.GATEWAY_DATABASE_URL, schema);
     try {
-      await control.exec(
-        "UPDATE applications SET secret=(SELECT secret FROM app_channels WHERE app_id='perch-mail' AND kind='apns')",
-      );
+      await control.prepare("UPDATE app_channels SET secret=? WHERE app_id='perch-mail'").run(sealed);
     } finally {
       await control.close();
     }
     app = await createGateway(options);
-    assert.equal(await duplicate(), null);
     assert.ok(await app.db.prepare('SELECT 1 FROM gateway_key_check').get());
     assert.equal((await app.applications.describe('perch-mail')).apns.hasKey, true);
     await app.close();

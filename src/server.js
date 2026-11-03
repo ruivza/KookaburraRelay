@@ -169,7 +169,7 @@ export async function createGateway({
     if (!(await db.prepare('SELECT 1 FROM schema_migrations WHERE version=2').get())) {
       await db.transaction(async () => {
         await db
-          .prepare('INSERT INTO applications VALUES(?,?,1,?,NULL) ON CONFLICT DO NOTHING')
+          .prepare('INSERT INTO applications(id,name,enabled,revision) VALUES(?,?,1,?) ON CONFLICT DO NOTHING')
           .run(defaultApp, 'Perch Mail', randomUUID());
         await db.exec('INSERT INTO schema_migrations VALUES(2) ON CONFLICT DO NOTHING');
       });
@@ -223,9 +223,6 @@ export async function createGateway({
     await db.exec(
       "UPDATE delivery_jobs SET notification=NULL WHERE notification IS NOT NULL AND state IN ('accepted','failed','unknown','cancelled')",
     );
-    // Earlier versions duplicated the sealed APNs key here; app_channels is the only copy read. The master key
-    // check above has already authenticated it.
-    await db.exec('UPDATE applications SET secret=NULL WHERE secret IS NOT NULL');
     const monitorPath = resolve(dataDir, 'monitor.token');
     if (!existsSync(monitorPath)) writeFileSync(monitorPath, randomSecret(), { mode: 0o600, flag: 'wx' });
     const monitorToken = readFileSync(monitorPath, 'utf8').trim();

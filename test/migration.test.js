@@ -60,6 +60,15 @@ test('numbered migrations apply once, in order, and complete databases from 0.1.
       await versions(),
       files.map(f => f.version),
     );
+    const exists = (table, column) =>
+      db
+        .prepare(
+          'SELECT 1 FROM information_schema.columns WHERE table_schema=? AND table_name=?' +
+            (column ? ' AND column_name=?' : ''),
+        )
+        .get(schema, table, ...(column ? [column] : []));
+    for (const [table, column] of [['limits'], ['configuration'], ['applications', 'secret']])
+      assert.equal(await exists(table, column), undefined, table + (column ? '.' + column : ''));
     // A database last run by 0.1.2: its markers, without the column 0.1.3 added.
     await db.exec('ALTER TABLE registrations DROP COLUMN confirmed_at');
     await db.exec('DELETE FROM schema_migrations');

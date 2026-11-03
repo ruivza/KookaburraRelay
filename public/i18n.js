@@ -618,7 +618,8 @@ export function translate(source, target) {
 }
 function initialLanguage() {
   try {
-    const saved = localStorage.getItem('perch.gateway.language');
+    // 0.3.0 renamed the key; a choice saved under the old one still applies.
+    const saved = localStorage.getItem('relay.gateway.language') ?? localStorage.getItem('perch.gateway.language');
     if (['zh', 'en'].includes(saved)) return saved;
   } catch {
     /* Storage may be unavailable. */
@@ -653,7 +654,8 @@ export function setLanguage(next) {
   if (!['zh', 'en'].includes(next)) return;
   language = next;
   try {
-    localStorage.setItem('perch.gateway.language', next);
+    localStorage.setItem('relay.gateway.language', next);
+    localStorage.removeItem('perch.gateway.language');
   } catch {
     /* Switching still works without storage. */
   }

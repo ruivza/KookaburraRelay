@@ -44,20 +44,28 @@ export async function migrate(source, db) {
       if (!locked.locked) throw Error('Stop the target gateway before migration');
       if (await db.prepare('SELECT 1 FROM schema_migrations WHERE version=2').get())
         throw Error('Target already initialized; refusing to overwrite');
-      for (const table of [...tables, 'admin_security', 'admin_sessions'])
+      // Tables and columns later releases dropped (limits, configuration, applications.secret) are not imported.
+      const target = new Map();
+      for (const { table_name, column_name } of await db
+        .prepare('SELECT table_name,column_name FROM information_schema.columns WHERE table_schema=current_schema()')
+        .all())
+        target.set(table_name, [...(target.get(table_name) ?? []), column_name]);
+      const importing = tables.filter(table => target.has(table));
+      for (const table of [...importing, 'admin_security', 'admin_sessions'])
         if ((await db.prepare(`SELECT count(*) n FROM ${table}`).get()).n)
           throw Error('Target must be empty: ' + table);
       const report = [];
-      for (const table of tables) {
-        const rows = snapshot[table];
-        for (const row of rows) {
-          const cols = Object.keys(row);
-          if (cols.some(c => !/^\w+$/.test(c))) throw Error('Invalid source column');
+      for (const table of importing) {
+        const sourceColumns = snapshot[table].length ? Object.keys(snapshot[table][0]) : [];
+        if (sourceColumns.some(c => !/^\w+$/.test(c))) throw Error('Invalid source column');
+        const cols = sourceColumns.filter(c => target.get(table).includes(c));
+        const pick = row => Object.fromEntries(cols.map(c => [c, row[c]]));
+        const rows = snapshot[table].map(pick);
+        for (const row of rows)
           await db
             .prepare(`INSERT INTO ${table} (${cols.join(',')}) VALUES(${cols.map(() => '?').join(',')})`)
             .run(...Object.values(row));
-        }
-        const imported = await db.prepare(`SELECT * FROM ${table}`).all();
+        const imported = (await db.prepare(`SELECT * FROM ${table}`).all()).map(pick);
         if (checksum(rows) !== checksum(imported)) throw Error('Migration verification failed: ' + table);
         report.push({ table, rows: rows.length, verified: true });
       }

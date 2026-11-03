@@ -67,7 +67,6 @@ export class Maintenance {
       expired: [
         ['registrations', 'expires<=?', [now]],
         ['admin_sessions', 'expires<=?', [now]],
-        ['limits', 'start<?', [now - 3600000]],
       ],
     };
     return types.flatMap(kind => plans[kind].map(([table, where, values]) => ({ kind, table, where, values })));
