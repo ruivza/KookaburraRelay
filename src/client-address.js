@@ -16,22 +16,33 @@ export function normalizeIP(value) {
 export function rateKey(value) {
   const address = normalizeIP(value);
   if (isIP(address) === 4) return address;
-  const [head, tail = ''] = address.split('::'), left = head ? head.split(':') : [], right = tail ? tail.split(':') : [];
+  const [head, tail = ''] = address.split('::'),
+    left = head ? head.split(':') : [],
+    right = tail ? tail.split(':') : [];
   const words = [...left, ...Array(8 - left.length - right.length).fill('0'), ...right];
-  return words.slice(0, 4).map(word => parseInt(word, 16).toString(16)).join(':') + '::/64';
+  return (
+    words
+      .slice(0, 4)
+      .map(word => parseInt(word, 16).toString(16))
+      .join(':') + '::/64'
+  );
 }
 
 // Only explicit IPs/CIDRs are trusted; never trust a caller-selected hop count.
 export function clientAddressResolver(value = '') {
   const trusted = new BlockList();
-  for (const item of value.split(',').map(s => s.trim()).filter(Boolean)) {
+  for (const item of value
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)) {
     const parts = item.split('/');
     if (parts.length > 2 || !isIP(parts[0]) || parts[0].includes('%')) throw Error('Invalid trusted proxy IP/CIDR');
     const family = isIP(parts[0]) === 4 ? 'ipv4' : 'ipv6';
     if (parts.length === 1) trusted.addAddress(parts[0], family);
     else {
       const bits = Number(parts[1]);
-      if (!/^\d+$/.test(parts[1]) || !Number.isInteger(bits) || bits < 1 || bits > (family === 'ipv4' ? 32 : 128)) throw Error('Invalid trusted proxy prefix');
+      if (!/^\d+$/.test(parts[1]) || !Number.isInteger(bits) || bits < 1 || bits > (family === 'ipv4' ? 32 : 128))
+        throw Error('Invalid trusted proxy prefix');
       trusted.addSubnet(parts[0], bits, family);
     }
   }
@@ -41,13 +52,17 @@ export function clientAddressResolver(value = '') {
     if (!isTrusted(peer)) return peer;
     const header = req.headers['x-forwarded-for'];
     if (header === undefined) return peer;
-    if (typeof header !== 'string' || header.length > 2048) throw Object.assign(Error('Invalid forwarding header'), { status: 400 });
+    if (typeof header !== 'string' || header.length > 2048)
+      throw Object.assign(Error('Invalid forwarding header'), { status: 400 });
     const hops = header.split(',');
     if (hops.length > 32) throw Object.assign(Error('Too many proxy hops'), { status: 400 });
     let current = peer;
     for (let index = hops.length - 1; index >= 0 && isTrusted(current); index--) {
-      try { current = normalizeIP(hops[index].trim()); }
-      catch { throw Object.assign(Error('Invalid forwarding header'), { status: 400 }); }
+      try {
+        current = normalizeIP(hops[index].trim());
+      } catch {
+        throw Object.assign(Error('Invalid forwarding header'), { status: 400 });
+      }
     }
     return current;
   };
