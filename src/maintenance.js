@@ -141,9 +141,11 @@ export class Maintenance {
       await this.db
         .prepare("UPDATE maintenance_settings SET next_at=?+(settings->>'intervalHours')::bigint*3600000 WHERE id=1")
         .run(this.now());
-      this.work = this.execute(id, plan, client).finally(() => {
-        this.busy = false;
-      });
+      this.work = this.db
+        .detached(() => this.execute(id, plan, client))
+        .finally(() => {
+          this.busy = false;
+        });
       return { id, status: 'running' };
     } catch (error) {
       if (locked) await client.query('SELECT pg_advisory_unlock(hashtext(current_schema()),72841105)').catch(() => {});

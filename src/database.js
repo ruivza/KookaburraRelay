@@ -54,6 +54,11 @@ export class Database {
   changedConfiguration() {
     return !!this.context.getStore()?.changedConfiguration;
   }
+  // Runs fn outside any transaction context, for work started from inside one that outlives it (a background
+  // job would otherwise keep using the transaction's connection after it was released).
+  detached(fn) {
+    return this.context.exit(fn);
+  }
   prepare(sql) {
     let n = 0;
     sql = sql.replace(/\?/g, () => '$' + ++n);
@@ -66,10 +71,24 @@ export class Database {
   async exec(sql) {
     await this.query(sql);
   }
+  // A transaction inside another is a savepoint: its failure rolls back only its own writes and leaves the outer
+  // transaction usable. Commit hooks run when the outermost transaction commits.
   async transaction(fn) {
-    if (this.context.getStore()) return fn();
+    const outer = this.context.getStore();
+    if (outer) {
+      const savepoint = 'nested_' + ++outer.savepoints;
+      await outer.client.query('SAVEPOINT ' + savepoint);
+      try {
+        const result = await fn();
+        await outer.client.query('RELEASE SAVEPOINT ' + savepoint);
+        return result;
+      } catch (error) {
+        await outer.client.query('ROLLBACK TO SAVEPOINT ' + savepoint);
+        throw error;
+      }
+    }
     const client = await this.pool.connect();
-    const state = { client, changedConfiguration: false, committed: [] };
+    const state = { client, changedConfiguration: false, committed: [], savepoints: 0 };
     let result;
     try {
       await client.query('BEGIN');

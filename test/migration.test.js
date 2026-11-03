@@ -80,3 +80,40 @@ test('numbered migrations apply once, in order, and complete databases from 0.1.
     await db.close();
   }
 });
+
+test('a nested transaction is a savepoint: its failure keeps the outer transaction and its writes', async () => {
+  const schema = 'test_savepoint_' + randomUUID().replaceAll('-', '');
+  const db = new Database(process.env.GATEWAY_DATABASE_URL, schema);
+  try {
+    await db.exec(`CREATE SCHEMA ${schema}`);
+    await db.exec('CREATE TABLE t(v TEXT PRIMARY KEY)');
+    await db.transaction(async () => {
+      await db.prepare('INSERT INTO t VALUES(?)').run('outer');
+      await assert.rejects(
+        db.transaction(async () => {
+          await db.prepare('INSERT INTO t VALUES(?)').run('inner');
+          // A failing statement would abort a plain shared transaction.
+          await db.prepare('INSERT INTO t VALUES(?)').run('outer');
+        }),
+        e => e.code === '23505',
+      );
+      await db.prepare('INSERT INTO t VALUES(?)').run('after');
+    });
+    assert.deepEqual(
+      (await db.prepare('SELECT v FROM t ORDER BY v').all()).map(r => r.v),
+      ['after', 'outer'],
+    );
+    // Work started inside a transaction but detached from it runs on the pool, not the finished transaction.
+    let late;
+    await db.transaction(async () => {
+      late = db.detached(async () => {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        return (await db.prepare('SELECT count(*) n FROM t').get()).n;
+      });
+    });
+    assert.equal(await late, 2);
+  } finally {
+    await db.exec(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await db.close();
+  }
+});

@@ -298,24 +298,30 @@ export async function createGateway({
         release;
       res.setHeader('X-Request-ID', requestId);
       res.once('finish', () => {
-        void (async () => {
-          const duration = performance.now() - start;
-          monitor.request(res.statusCode, duration);
-          if ((path.startsWith('/v1/') && req.method !== 'GET') || (res.statusCode >= 400 && res.statusCode !== 429)) {
-            await abuse.log(async () => {
-              const logApp = req.gatewayScope?.appId ?? body?.appId ?? (path.startsWith('/v1/') ? defaultApp : '');
-              await monitor.record({
-                kind: res.statusCode >= 400 ? 'error' : 'request',
-                action: req.method + ' ' + routeName(routes, path),
-                appId: validID(logApp) && (await cache.application(logApp)) ? logApp : '',
-                channel: req.gatewayScope?.channel || (['apns', 'fcm'].includes(body?.channel) ? body.channel : ''),
-                status: res.statusCode,
-                duration,
-                requestId,
+        // Detached: a response may finish while the handler's transaction context is still current.
+        void db
+          .detached(async () => {
+            const duration = performance.now() - start;
+            monitor.request(res.statusCode, duration);
+            if (
+              (path.startsWith('/v1/') && req.method !== 'GET') ||
+              (res.statusCode >= 400 && res.statusCode !== 429)
+            ) {
+              await abuse.log(async () => {
+                const logApp = req.gatewayScope?.appId ?? body?.appId ?? (path.startsWith('/v1/') ? defaultApp : '');
+                await monitor.record({
+                  kind: res.statusCode >= 400 ? 'error' : 'request',
+                  action: req.method + ' ' + routeName(routes, path),
+                  appId: validID(logApp) && (await cache.application(logApp)) ? logApp : '',
+                  channel: req.gatewayScope?.channel || (['apns', 'fcm'].includes(body?.channel) ? body.channel : ''),
+                  status: res.statusCode,
+                  duration,
+                  requestId,
+                });
               });
-            });
-          }
-        })().catch(() => console.error('Gateway request audit could not be stored'));
+            }
+          })
+          .catch(() => console.error('Gateway request audit could not be stored'));
       });
       const send = (status, value) => {
         if (res.destroyed || res.headersSent) return;
