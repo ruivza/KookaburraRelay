@@ -1,7 +1,8 @@
 // Configuration read on the request and delivery paths, cached in process memory. One gateway process owns
 // the database, and every change goes through a service method that calls invalidate(): entries are dropped
-// after the writing transaction commits, and the generation counter stops a value loaded before that commit
-// from being stored afterwards. Changes made directly in the database take effect only after a restart.
+// just before and again just after the writing transaction commits, and the generation counter stops a value
+// loaded before that commit from being stored afterwards. Changes made directly in the database take effect
+// only after a restart.
 const freeze = value => {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -34,11 +35,11 @@ export class ConfigCache {
   // Marks the current transaction as a configuration change before its first read, so every read in it goes to
   // the database: a change committed just before it may not have dropped its entries yet.
   writing() {
-    this.db.afterCommit(() => this.generation++);
+    this.db.onCommit(() => this.generation++);
   }
   // Drops `kind:id` and `kind:id:*` once the current transaction commits.
   invalidate(kind, id) {
-    this.db.afterCommit(() => {
+    this.db.onCommit(() => {
       this.generation++;
       const key = kind + ':' + id;
       for (const entry of this.entries.keys())

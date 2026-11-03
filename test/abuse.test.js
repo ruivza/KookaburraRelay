@@ -474,3 +474,82 @@ test('resource settings require admin auth, validate bounds and persist; malform
     await f.close();
   }
 });
+
+// Sends, registrations and confirmations lock rows instead of serializing on one global lock.
+const pendingJobs = async f =>
+  (await f.app.db.prepare("SELECT count(*) n FROM delivery_jobs WHERE state IN ('queued','retrying','sending')").get())
+    .n;
+
+test('concurrent confirmations of one registration mint a single grant', async () => {
+  const f = await fixture();
+  try {
+    // An earlier grant for the same device token makes confirmation cancel its work; holding that call keeps the
+    // first confirmation inside its transaction while the others arrive.
+    await f.enroll(1);
+    const r = await f.call('/v1/registrations', f.input(1));
+    const proof = f.sent.find(p => p.perchRegistration?.id === r.body.registrationId).perchRegistration;
+    const cancel = f.app.queue.cancelRegistration.bind(f.app.queue);
+    let reached, release;
+    const inside = new Promise(resolve => (reached = resolve)),
+      gate = new Promise(resolve => (release = resolve));
+    f.app.queue.cancelRegistration = async id => {
+      reached();
+      await gate;
+      return cancel(id);
+    };
+    const confirm = () => f.call('/v1/registrations/' + proof.id + '/confirm', proof);
+    const first = confirm();
+    await inside;
+    const others = Array.from({ length: 3 }, confirm);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    release();
+    const results = await Promise.all([first, ...others]);
+    assert.deepEqual(
+      results.map(x => x.status),
+      Array(4).fill(200),
+    );
+    assert.equal(new Set(results.map(x => x.body.credential)).size, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test('sends racing a configuration change never leave work queued for the old configuration', async () => {
+  const f = await fixture();
+  try {
+    const grants = [];
+    for (let n = 1; n <= 8; n++) grants.push(await f.enroll(n));
+    const sends = grants.map((g, n) =>
+      f.call('/v1/jobs', scope(g, 'config-race-' + String(n).padStart(8, '0')), g.credential, '198.51.100.' + (n + 1)),
+    );
+    const change = f.app.applications.update('perch-mail', { name: 'Mail', enabled: false });
+    const results = await Promise.all(sends);
+    await change;
+    assert.ok(
+      results.every(r => r.status === 202 || r.status === 410),
+      JSON.stringify(results.map(r => r.status)),
+    );
+    assert.equal(await pendingJobs(f), 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test('a revocation racing a send leaves no queued work for the revoked registration', async () => {
+  const f = await fixture();
+  try {
+    for (let n = 1; n <= 5; n++) {
+      const g = await f.enroll(n);
+      const ip = '198.51.100.' + (n + 1);
+      const [sent, revoked] = await Promise.all([
+        f.call('/v1/jobs', scope(g, 'revoke-race-' + String(n).padStart(8, '0')), g.credential, ip),
+        f.call('/v1/registrations/' + g.registrationId, undefined, g.revokeToken, ip, 'DELETE'),
+      ]);
+      assert.equal(revoked.status, 200);
+      assert.ok([202, 410].includes(sent.status), String(sent.status));
+    }
+    assert.equal(await pendingJobs(f), 0);
+  } finally {
+    await f.close();
+  }
+});

@@ -25,9 +25,12 @@ export class Database {
   async query(sql, values = []) {
     return (this.context.getStore()?.client || this.pool).query(sql, values);
   }
-  // Runs fn once the current transaction commits, or now outside one. It also marks the transaction as having
-  // changed configuration, so ConfigCache reads inside it go to the database.
-  afterCommit(fn) {
+  // Runs fn just before the current transaction sends COMMIT and again once it has committed (once, now, outside a
+  // transaction). For idempotent cache invalidation: anyone who waited on this transaction's row locks resumes after
+  // the first call, so finds nothing stale, and the second drops what was loaded in between. A rollback skips the
+  // second call. It also marks the transaction as having changed configuration, so its own cached reads go to the
+  // database.
+  onCommit(fn) {
     const state = this.context.getStore();
     if (!state) return fn();
     state.changedConfiguration = true;
@@ -56,6 +59,7 @@ export class Database {
     try {
       await client.query('BEGIN');
       result = await this.context.run(state, fn);
+      for (const hook of state.committed) hook();
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');

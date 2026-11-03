@@ -326,3 +326,38 @@ test('startup erases interrupted request content and repairs older terminal job 
     await f.close();
   }
 });
+
+test('a server ticket presented by two registrations at once is consumed by only one', async () => {
+  const f = await fixture();
+  try {
+    await f.policy({ requireTrustedServers: true });
+    await f.app.access.createServer({ id: 'server', name: 'Business', apps: ['perch-mail'] });
+    const { credential } = await f.app.access.updateServer('server', { action: 'approve' });
+    const input = f.input();
+    const { appId, deviceId, serverId } = input;
+    input.serverTicket = (await f.app.access.ticket(credential, { appId, deviceId, serverId })).ticket;
+    // Hold the first registration inside the transaction that consumes the ticket while the second arrives.
+    const original = f.app.access.registrationServer.bind(f.app.access);
+    let reached, release, held;
+    const inside = new Promise(resolve => (reached = resolve)),
+      gate = new Promise(resolve => (release = resolve));
+    f.app.access.registrationServer = async (body, policy, consume) => {
+      const result = await original(body, policy, consume);
+      if (consume && !held) {
+        held = true;
+        reached();
+        await gate;
+      }
+      return result;
+    };
+    const first = f.call('/v1/registrations', input);
+    await inside;
+    const second = f.call('/v1/registrations', input);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    release();
+    const statuses = (await Promise.all([first, second])).map(r => r.status).sort();
+    assert.deepEqual(statuses, [202, 403]);
+  } finally {
+    await f.close();
+  }
+});

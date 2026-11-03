@@ -96,12 +96,16 @@ export class DeliveryQueue {
     const encoded = content ? JSON.stringify(content) : '';
     const contentHash = encoded ? sha256Hex(encoded) : '';
     const job = await this.db.transaction(async () => {
-      await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
-      await this.db.query('SELECT pg_advisory_xact_lock(72841103)');
+      // Row locks, application first: configuration changes take this application's row FOR UPDATE, and
+      // revocation and other sends to this device take the registration row.
+      const application = await this.db
+        .prepare('SELECT enabled,revision FROM applications WHERE id=? FOR SHARE')
+        .get(entry.app_id);
       entry = await this.db
         .prepare('SELECT * FROM registrations WHERE id=? AND expires>? FOR UPDATE')
         .get(entry.id, this.now());
-      if (!entry || !(await this.applications.current(entry))) fail(410, 'Registration expired or revoked');
+      if (!entry || !application?.enabled || application.revision !== entry.app_revision)
+        fail(410, 'Registration expired or revoked');
       if (!allows(entry, kind) || !(await this.applications.capabilities(entry.app_id, entry.channel)).includes(kind))
         fail(403, 'Credential scope mismatch');
       if (this.stopping) fail(503, 'Gateway shutting down');
@@ -116,6 +120,8 @@ export class DeliveryQueue {
           return previous;
         }
       }
+      // Sends to different devices no longer serialize, so concurrent ones can pass this check together and
+      // overshoot the cap by at most the requests in flight.
       if (
         (
           await this.db

@@ -30,6 +30,13 @@ export class Applications {
     if (!row) fail(404, 'Application not found');
     return row;
   }
+  // Sends, registrations and confirmations hold the application row FOR SHARE while they commit.
+  async lock(id) {
+    if (!validID(id)) fail(400, 'Invalid application ID');
+    const row = await this.db.prepare('SELECT * FROM applications WHERE id=? FOR UPDATE').get(id);
+    if (!row) fail(404, 'Application not found');
+    return row;
+  }
   async describe(id) {
     const row = await this.row(id),
       apns = await this.channels.describe(id, 'apns'),
@@ -106,7 +113,7 @@ export class Applications {
     await cancelJobs(this.db, this.now(), 'ConfigurationChanged', 'app_id=?', [id]);
   }
   async update(id, body) {
-    const row = await this.row(id);
+    const row = await this.lock(id);
     if (!this.validName(body.name) || typeof body.enabled !== 'boolean') fail(400, 'Invalid application settings');
     const prepared = body.apns === undefined ? null : await this.channels.prepare(id, 'apns', body.apns);
     const previous = await this.notifications(id);
@@ -134,7 +141,7 @@ export class Applications {
     return await this.describe(id);
   }
   async configureChannel(id, kind, body) {
-    await this.row(id);
+    await this.lock(id);
     const prepared = await this.channels.prepare(id, kind, body);
     await this.db.transaction(async () => {
       await this.channels.save(id, kind, prepared);
@@ -144,7 +151,7 @@ export class Applications {
     return await this.describe(id);
   }
   async removeChannel(id, kind) {
-    await this.row(id);
+    await this.lock(id);
     if (!['apns', 'fcm'].includes(kind)) fail(404, 'Channel not found');
     await this.db.transaction(async () => {
       await this.db.prepare('DELETE FROM app_channels WHERE app_id=? AND kind=?').run(id, kind);
@@ -156,7 +163,7 @@ export class Applications {
     return await this.describe(id);
   }
   async remove(id) {
-    await this.row(id);
+    await this.lock(id);
     await this.db.transaction(async () => {
       await this.invalidate(id);
       await this.db.prepare('DELETE FROM app_channels WHERE app_id=?').run(id);
