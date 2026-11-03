@@ -72,7 +72,7 @@ export async function sendWebhook({ url, secret, payload, id }, resolver = looku
           });
           res.on('error', reject);
           res.on('end', () =>
-            res.statusCode >= 200 && res.statusCode < 300 ? resolve() : reject(Error('Webhook rejected')),
+            res.statusCode >= 200 && res.statusCode < 300 ? resolve(undefined) : reject(Error('Webhook rejected')),
           );
         },
       );
@@ -85,7 +85,13 @@ export async function sendWebhook({ url, secret, payload, id }, resolver = looku
 }
 export class Alerts {
   constructor({ db, seal, open, abuse, monitor, now = Date.now, sender = sendWebhook }) {
-    Object.assign(this, { db, seal, open, abuse, monitor, now, sender });
+    this.db = db;
+    this.seal = seal;
+    this.open = open;
+    this.abuse = abuse;
+    this.monitor = monitor;
+    this.now = now;
+    this.sender = sender;
     this.store = new SettingsStore(db, 'alert_settings');
   }
   async initialize() {

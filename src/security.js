@@ -68,7 +68,11 @@ async function verifyToken(value, stored) {
 }
 export class Security {
   constructor({ db, seal, open, now = Date.now, adminPath }) {
-    Object.assign(this, { db, seal, open, now, adminPath });
+    this.db = db;
+    this.seal = seal;
+    this.open = open;
+    this.now = now;
+    this.adminPath = adminPath;
     this.verifying = 0;
     this.attempt = new AsyncLocalStorage();
     // scrypt runs under the admin row lock while holding a pool connection; cap attempts before taking one.

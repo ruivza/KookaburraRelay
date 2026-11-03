@@ -1,6 +1,11 @@
 import { spawn } from 'node:child_process';
 import { rename, rm } from 'node:fs/promises';
 import { fail } from './util.js';
+/**
+ * @param {string[]} args
+ * @param {{ signal?: AbortSignal, timeout?: number }} [options]
+ * @returns {Promise<void>}
+ */
 export function ageProcess(args, { signal, timeout = 600000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('age', args, { stdio: ['ignore', 'ignore', 'ignore'], signal });

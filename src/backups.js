@@ -21,8 +21,15 @@ export async function pendingJob(db, kind, except = '') {
     .get(kind, except));
 }
 export class Backups {
+  // The backup worker passes no security service; it uses only the settings store.
+  /** @param {{ db: any, seal: any, open: any, security?: any, now?: () => number, validateKey?: (value: string) => Promise<void> }} options */
   constructor({ db, seal, open, security, now = Date.now, validateKey = validateRecipient }) {
-    Object.assign(this, { db, seal, open, security, now, validateKey });
+    this.db = db;
+    this.seal = seal;
+    this.open = open;
+    this.security = security;
+    this.now = now;
+    this.validateKey = validateKey;
     this.store = new SettingsStore(db, 'backup_settings');
   }
   async initialize() {

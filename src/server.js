@@ -101,6 +101,12 @@ async function readBody(req) {
   return body;
 }
 
+/**
+ * @param {{ databaseUrl?: string, databaseSchema?: string, dataDir?: string, adminToken?: string, providerFactory?: any,
+ *   fcmFactory?: any, autoStart?: boolean, now?: () => number, trustedProxies?: string, onFatal?: (error?: any) => void,
+ *   shutdownTimeout?: number, appleVerifier?: any, googleVerifier?: any, alertSender?: any, databasePoolSize?: number,
+ *   deliveryWorkers?: number, legacyWorkers?: number }} [options]
+ */
 export async function createGateway({
   databaseUrl = process.env.GATEWAY_DATABASE_URL,
   databaseSchema = process.env.GATEWAY_DATABASE_SCHEMA || 'public',

@@ -9,6 +9,7 @@ Requires Node.js 24+, PostgreSQL, and `age` for backup encryption tests. Install
 ```sh
 npm run check
 npm run lint
+npm run typecheck
 npm run format:check
 GATEWAY_DATABASE_URL='postgresql://relay_test:replace-me@127.0.0.1:5432/relay_test' npm test
 ```
@@ -19,7 +20,7 @@ Without local Node.js or PostgreSQL, run the same check and suite in throwaway c
 sh scripts/test-docker.sh
 ```
 
-The script starts `node:24-alpine` and `postgres:18-alpine` on a private network with per-run names, installs dependencies into a container-only volume, and removes the containers and network on exit, including after Ctrl-C. Arguments replace the default `npm run check`, `lint`, `format:check` and `npm test`, for example `sh scripts/test-docker.sh node --test test/abuse.test.js`. With Node.js installed, `npm run test:docker` is equivalent.
+The script starts `node:24-alpine` and `postgres:18-alpine` on a private network with per-run names, installs dependencies into a container-only volume, and removes the containers and network on exit, including after Ctrl-C. Arguments replace the default `npm run check`, `lint`, `typecheck`, `format:check` and `npm test`, for example `sh scripts/test-docker.sh node --test test/abuse.test.js`. With Node.js installed, `npm run test:docker` is equivalent.
 
 Changes to admission, rate limiting, queueing, or database access on the delivery path should be measured with `sh scripts/test-docker.sh node scripts/bench.mjs` and compared with the baseline in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 

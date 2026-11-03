@@ -17,7 +17,12 @@ const converted = row => (row.kind === 'apns' ? row.topic != null : row.project_
 
 export class ChannelStore {
   constructor({ db, seal, open, providerFactory, fcmFactory, cache }) {
-    Object.assign(this, { db, seal, open, providerFactory, fcmFactory, cache });
+    this.db = db;
+    this.seal = seal;
+    this.open = open;
+    this.providerFactory = providerFactory;
+    this.fcmFactory = fcmFactory;
+    this.cache = cache;
     this.adapters = new Map();
   }
   async row(id, kind) {

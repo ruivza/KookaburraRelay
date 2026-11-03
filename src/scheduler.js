@@ -5,6 +5,12 @@ export class Scheduler {
   constructor() {
     this.jobs = [];
   }
+  /**
+   * @param {string} name
+   * @param {number} interval
+   * @param {() => any} run
+   * @param {{ onError?: (error: any) => void }} [options]
+   */
   every(name, interval, run, { onError } = {}) {
     this.jobs.push({ name, interval, run, onError, next: 0, running: null, failures: 0, lastSuccess: null });
     return this;

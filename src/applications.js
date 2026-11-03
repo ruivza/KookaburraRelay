@@ -16,7 +16,12 @@ const activeRegistrations = 'SELECT app_id,count(*) n FROM registrations WHERE d
 
 export class Applications {
   constructor({ db, seal, open, providerFactory, fcmFactory, now = Date.now, cache = new ConfigCache(db) }) {
-    Object.assign(this, { db, seal, open, providerFactory, now, cache });
+    this.db = db;
+    this.seal = seal;
+    this.open = open;
+    this.providerFactory = providerFactory;
+    this.now = now;
+    this.cache = cache;
     this.channels = new ChannelStore({ db, seal, open, providerFactory, fcmFactory, cache });
     // Serialize configuration validation and mutation, including cross-app topic uniqueness.
     for (const method of ['create', 'update', 'configureChannel', 'removeChannel', 'remove']) {

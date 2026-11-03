@@ -44,6 +44,10 @@ function safeError(error) {
     : 'BackupOperationFailed';
 }
 export class BackupWorker {
+  /**
+   * @param {{ db: any, backups: any, root?: string, now?: () => number, storageFactory?: (settings: any, key: string) => any,
+   *   encrypt?: typeof encryptFile, localBackup?: (...args: any[]) => any, script?: string }} options
+   */
   constructor({
     db,
     backups,
@@ -54,7 +58,12 @@ export class BackupWorker {
     localBackup,
     script = '/ops/backup-once.sh',
   }) {
-    Object.assign(this, { db, backups, root, now, storageFactory, encrypt });
+    this.db = db;
+    this.backups = backups;
+    this.root = root;
+    this.now = now;
+    this.storageFactory = storageFactory;
+    this.encrypt = encrypt;
     this.controller = new AbortController();
     this.localBackup =
       localBackup ||

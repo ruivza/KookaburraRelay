@@ -16,7 +16,9 @@ export const defaults = {
 const kinds = ['requests', 'errors', 'audit', 'jobs', 'metrics', 'probes', 'runs', 'expired'];
 export class Maintenance {
   constructor({ db, now = Date.now, runId }) {
-    Object.assign(this, { db, now, runId });
+    this.db = db;
+    this.now = now;
+    this.runId = runId;
     this.store = new SettingsStore(db, 'maintenance_settings');
     this.busy = false;
   }

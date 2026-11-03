@@ -30,7 +30,9 @@ const ceilings = {
 // durable quotas are charged in the caller's transaction, so failed admission rolls back.
 export class AbuseProtection {
   constructor({ db, now = Date.now, cache = db && new ConfigCache(db) }) {
-    Object.assign(this, { db, now, cache });
+    this.db = db;
+    this.now = now;
+    this.cache = cache;
     this.store = db && new SettingsStore(db, 'abuse_settings');
     this.settings = { ...abuseDefaults };
     this.pendingRejections = new Map();

@@ -48,7 +48,15 @@ export class DeliveryQueue {
     abuse,
     access,
   }) {
-    Object.assign(this, { db, applications, open, seal, now, concurrency, legacyConcurrency, abuse, access });
+    this.db = db;
+    this.applications = applications;
+    this.open = open;
+    this.seal = seal;
+    this.now = now;
+    this.concurrency = concurrency;
+    this.legacyConcurrency = legacyConcurrency;
+    this.abuse = abuse;
+    this.access = access;
     this.active = new Map();
     this.failures = 0;
     this.lastSuccessAt = null;
@@ -105,6 +113,10 @@ export class DeliveryQueue {
     const { dedupe, notification, notification_hash, notification_sealed, ...safe } = job;
     return safe;
   }
+  /**
+   * @param {any} entry
+   * @param {{ mode?: string, requestId?: string, kind?: string, notification?: any, alert?: any }} [options]
+   */
   async enqueue(entry, { mode = 'async', requestId, kind = 'sync', notification, alert } = {}) {
     const content = deliveryContent(kind, notification, alert, this.now());
     const encoded = content ? JSON.stringify(content) : '';
@@ -395,9 +407,11 @@ export class DeliveryQueue {
           break;
         }
         if (this.wakeRequested) continue;
-        const wake = new Promise(resolve => {
-          this.resumeWake = resolve;
-        });
+        const wake = /** @type {Promise<void>} */ (
+          new Promise(resolve => {
+            this.resumeWake = resolve;
+          })
+        );
         try {
           await Promise.race([...pending, wake]);
         } finally {

@@ -59,10 +59,10 @@ export function allows(entry, kind) {
 export function alertContent(value) {
   if (!isPlainObject(value) || Object.keys(value).some(k => !['title', 'body', 'sound'].includes(k)))
     fail(400, 'Invalid alert content');
-  for (const [key, limit] of [
+  for (const [key, limit] of /** @type {[string, number][]} */ ([
     ['title', 120],
     ['body', 400],
-  ]) {
+  ])) {
     if (
       typeof value[key] !== 'string' ||
       Array.from(value[key]).length > limit ||

@@ -75,7 +75,13 @@ export class AccessControl {
     googleVerifier,
     cache = new ConfigCache(db),
   }) {
-    Object.assign(this, { db, seal, open, now, abuse, appleVerifier, cache });
+    this.db = db;
+    this.seal = seal;
+    this.open = open;
+    this.now = now;
+    this.abuse = abuse;
+    this.appleVerifier = appleVerifier;
+    this.cache = cache;
     this.google = googleVerifier ?? new GoogleIntegrity({ now });
     this.verifying = 0;
   }
