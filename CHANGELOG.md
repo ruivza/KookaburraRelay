@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-11-03
+
+Client- and operator-visible changes; read before upgrading. 0.2.0 was not released on its own, so upgrades from 0.1.2 also get the 0.2.0 changes below.
+
+- Add push protocol 2. Registrations sending `"protocol":2` must name their `appId` and receive `relayRegistration` reception proofs and `relay:{version:2,kind:"sync"}` sync hints, with `relay-` APNs collapse IDs and FCM collapse keys. Protocol 1 keeps the `perch` names and remains the default for this release only. `/v1/status` adds `protocols:[1,2]`.
+- New installations no longer create the `perch-mail` application; existing installations keep it. Create applications in the console.
+- Rename metrics from `perch_gateway_*` to `relay_gateway_*`. The old names are still served, marked deprecated, for this release only.
+- Remove the `limits` and `configuration` tables and the `applications.secret` column, none of which was read any more. The SQLite importer skips them.
+- Remove the deprecated `src/b2-storage.js`; use `S3Storage` from `src/s3-storage.js`.
+- The console stores its language choice as `relay.gateway.language` and still reads one saved under the old key.
+
+Fixes and other changes:
 
 - Take a request's handler slot only after its body has been read, so clients sending a body slowly can no longer hold the 64 slots every caller shares; console files and `/healthz` take no slot. Count `/admin/` requests against their rate limit before the session lookup.
 - Tighten the console's Content-Security-Policy with `base-uri 'none'`, `object-src 'none'` and `form-action 'self'`, and send `Referrer-Policy: no-referrer` on every response.
@@ -13,17 +24,7 @@
 - The rejections alert webhook sends `value` as a number, like the other alerts.
 - Run maintenance cleanup statements on their own connection instead of the request pool, and check the delivery queue cap without counting every pending job.
 - Type-check `src/` and `scripts/` with TypeScript in loose mode (`npm run typecheck`, also in CI and `scripts/test-docker.sh`). Nothing is compiled; constructors assign their fields one by one so the checker can see them.
-
-## 0.3.0 — 2026-11-03
-
-Client- and operator-visible changes; read before upgrading.
-
-- Add push protocol 2. Registrations sending `"protocol":2` must name their `appId` and receive `relayRegistration` reception proofs and `relay:{version:2,kind:"sync"}` sync hints, with `relay-` APNs collapse IDs and FCM collapse keys. Protocol 1 keeps the `perch` names and remains the default for this release only. `/v1/status` adds `protocols:[1,2]`.
-- New installations no longer create the `perch-mail` application; existing installations keep it. Create applications in the console.
-- Rename metrics from `perch_gateway_*` to `relay_gateway_*`. The old names are still served, marked deprecated, for this release only.
-- Remove the `limits` and `configuration` tables and the `applications.secret` column, none of which was read any more. The SQLite importer skips them.
-- Remove the deprecated `src/b2-storage.js`; use `S3Storage` from `src/s3-storage.js`.
-- The console stores its language choice as `relay.gateway.language` and still reads one saved under the old key.
+- Update `pg` to 8.23.1 and `@aws-sdk/client-s3` to 3.1156.0.
 
 ## 0.2.0 — 2026-11-03
 

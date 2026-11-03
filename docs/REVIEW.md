@@ -1,5 +1,15 @@
 # Release reviews
 
+## 0.3.0
+
+Review date: 2026-11-03. Covers the 0.2.0 and 0.3.0 changes, which were not released separately. Tests used isolated PostgreSQL 18 databases and simulated providers; a security review of the refactor was fixed in `a423538` with regression tests.
+
+- All 157 tests passed, none skipped, with the syntax check, ESLint, the TypeScript check and Prettier, in `scripts/test-docker.sh` and in CI on GitHub. Gateway and backup images built for amd64 and arm64.
+- A fresh `install.sh` deployment on Docker Desktop started all three services healthy. The gateway and backup worker connected as `relay_app`, which owns schema `relay`; the gateway ran as uid 1000 with a read-only root filesystem, no capabilities and port 3220 bound to loopback only.
+- Against that deployment: admin sign-in and sign-out, 13 console API listings, application create, duplicate and invalid IDs, APNs channel setup without echoing the key, protocol 2 registration validation, unknown-credential sends, and `/metrics` with and without its token. A registration with a throwaway APNs key reached Apple's sandbox, was rejected as expected and left no registration behind.
+- A manual and a scheduled backup completed, and `ops/verify-backup.sh` restored the bundle into a scratch database and verified the dump, master-key binding and application decryption. Data survived `docker compose down` and `up`.
+- Real-device APNs and FCM delivery was not repeated for this release.
+
 ## 0.1.2
 
 Review date: 2026-10-09. Directory changes received an independent code review and a separate regression run against an isolated PostgreSQL 18 database.
