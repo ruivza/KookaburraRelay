@@ -41,13 +41,14 @@ export class Applications {
     return row;
   }
   async describe(id) {
+    // Sequential: describe() also runs inside configuration transactions, which have a single connection.
     const row = await this.row(id);
-    const [channels, counts, registrations] = await Promise.all([
-      this.db.prepare('SELECT * FROM app_channels WHERE app_id=?').all(id),
-      this.db.prepare(jobCounts + ' WHERE app_id=? GROUP BY app_id').all(id),
-      this.db.prepare(activeRegistrations + ' AND app_id=? GROUP BY app_id').all(this.now(), id),
-    ]);
-    return this.present(row, channels, counts[0], registrations[0]);
+    const channels = await this.db.prepare('SELECT * FROM app_channels WHERE app_id=?').all(id);
+    const counts = await this.db.prepare(jobCounts + ' WHERE app_id=? GROUP BY app_id').get(id);
+    const registrations = await this.db
+      .prepare(activeRegistrations + ' AND app_id=? GROUP BY app_id')
+      .get(this.now(), id);
+    return this.present(row, channels, counts, registrations);
   }
   async present(row, channels, counts, registrations) {
     const [apns, fcm] = ['apns', 'fcm'].map(kind =>
