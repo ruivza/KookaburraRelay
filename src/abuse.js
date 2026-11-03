@@ -1,6 +1,7 @@
 import { cleanupExpired } from './expiry.js';
 import { RateLimiter } from './rate-limit.js';
 import { ConfigCache } from './config-cache.js';
+import { SettingsStore } from './settings-store.js';
 const DAY = 86400000;
 export const abuseDefaults = Object.freeze({
   registrationEnabled: true,
@@ -30,6 +31,7 @@ const ceilings = {
 export class AbuseProtection {
   constructor({ db, now = Date.now, cache = db && new ConfigCache(db) }) {
     Object.assign(this, { db, now, cache });
+    this.store = db && new SettingsStore(db, 'abuse_settings');
     this.settings = { ...abuseDefaults };
     this.pendingRejections = new Map();
     // Full means refuse: admission and log sampling fail closed rather than reset live windows.
@@ -42,12 +44,8 @@ export class AbuseProtection {
     this.cleanupFailures = 0;
   }
   async initialize() {
-    await this.db
-      .prepare('INSERT INTO abuse_settings VALUES(1,?) ON CONFLICT DO NOTHING')
-      .run(JSON.stringify(abuseDefaults));
-    this.settings = this.validate(
-      (await this.db.prepare('SELECT settings FROM abuse_settings WHERE id=1').get()).settings,
-    );
+    await this.store.initialize({ settings: abuseDefaults });
+    this.settings = this.validate((await this.store.read()).settings);
     // The scheduler repeats this every minute.
     await this.cleanup();
   }
@@ -124,7 +122,7 @@ export class AbuseProtection {
   }
   async save(input) {
     const settings = this.validate(input);
-    await this.db.prepare('UPDATE abuse_settings SET settings=? WHERE id=1').run(JSON.stringify(settings));
+    await this.store.write({ settings });
     this.settings = settings;
     return this.state();
   }

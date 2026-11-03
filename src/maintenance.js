@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { fail } from './util.js';
 import { expireRegistrations } from './expiry.js';
+import { SettingsStore } from './settings-store.js';
 const DAY = 86400000;
 export const defaults = {
   enabled: true,
@@ -17,6 +18,7 @@ const kinds = ['requests', 'errors', 'audit', 'jobs', 'metrics', 'probes', 'runs
 export class Maintenance {
   constructor({ db, now = Date.now, runId }) {
     Object.assign(this, { db, now, runId });
+    this.store = new SettingsStore(db, 'maintenance_settings');
     this.busy = false;
   }
   validate(value) {
@@ -31,9 +33,7 @@ export class Maintenance {
     return settings;
   }
   async initialize() {
-    await this.db
-      .prepare('INSERT INTO maintenance_settings VALUES(1,?,?) ON CONFLICT DO NOTHING')
-      .run(JSON.stringify(defaults), this.now() + defaults.intervalHours * 3600000);
+    await this.store.initialize({ settings: defaults, next_at: this.now() + defaults.intervalHours * 3600000 });
     await this.db
       .prepare(
         "UPDATE maintenance_runs SET status='failed',finished=?,error='Interrupted by restart' WHERE status='running'",
@@ -41,7 +41,7 @@ export class Maintenance {
       .run(this.now());
   }
   async state() {
-    const row = await this.db.prepare('SELECT * FROM maintenance_settings WHERE id=1').get();
+    const row = await this.store.read();
     return {
       settings: row.settings,
       nextAt: row.settings.enabled ? row.next_at : null,
@@ -110,14 +110,12 @@ export class Maintenance {
   }
   async save(id) {
     const p = await this.consume(id, 'settings');
-    await this.db
-      .prepare('UPDATE maintenance_settings SET settings=?,next_at=? WHERE id=1')
-      .run(JSON.stringify(p.settings), this.now() + p.settings.intervalHours * 3600000);
+    await this.store.write({ settings: p.settings, next_at: this.now() + p.settings.intervalHours * 3600000 });
     return this.state();
   }
   async tick() {
     if (this.busy || this.stopping) return;
-    const row = await this.db.prepare('SELECT * FROM maintenance_settings WHERE id=1').get();
+    const row = await this.store.read();
     if (row.settings.enabled && row.next_at <= this.now()) await this.start(this.plan(row.settings), 'automatic');
   }
   async manual(id) {

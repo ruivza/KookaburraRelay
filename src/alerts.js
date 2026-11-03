@@ -4,6 +4,7 @@ import { isIP } from 'node:net';
 import { createHmac, randomUUID } from 'node:crypto';
 import { requirePublic } from './net-guard.js';
 import { fail } from './util.js';
+import { SettingsStore } from './settings-store.js';
 export const alertDefaults = Object.freeze({
   enabled: false,
   rejections: 100,
@@ -85,14 +86,13 @@ export async function sendWebhook({ url, secret, payload, id }, resolver = looku
 export class Alerts {
   constructor({ db, seal, open, abuse, monitor, now = Date.now, sender = sendWebhook }) {
     Object.assign(this, { db, seal, open, abuse, monitor, now, sender });
+    this.store = new SettingsStore(db, 'alert_settings');
   }
   async initialize() {
-    await this.db
-      .prepare('INSERT INTO alert_settings VALUES(1,?,NULL,?) ON CONFLICT DO NOTHING')
-      .run(JSON.stringify(alertDefaults), randomUUID());
+    await this.store.initialize({ settings: alertDefaults, secret: null, revision: randomUUID() });
   }
   async row() {
-    return this.db.prepare('SELECT * FROM alert_settings WHERE id=1').get();
+    return this.store.read();
   }
   async state() {
     const row = await this.row(),
@@ -133,9 +133,11 @@ export class Alerts {
       fail(400, 'Invalid webhook signing secret');
     if (s.enabled && !secret) fail(400, 'Webhook URL required');
     await this.db.transaction(async () => {
-      await this.db
-        .prepare('UPDATE alert_settings SET settings=?,secret=?,revision=? WHERE id=1')
-        .run(JSON.stringify(s), secret ? this.seal(JSON.stringify(secret)) : null, randomUUID());
+      await this.store.write({
+        settings: s,
+        secret: secret ? this.seal(JSON.stringify(secret)) : null,
+        revision: randomUUID(),
+      });
       await this.db.prepare("UPDATE alert_notifications SET state='cancelled' WHERE state='pending'").run();
       await this.db.exec('DELETE FROM alert_incidents');
     });

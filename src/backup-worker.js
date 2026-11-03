@@ -97,7 +97,7 @@ export class BackupWorker {
   async tick() {
     if (this.controller.signal.aborted) return;
     const claimed = await this.db.transaction(async () => {
-      const row = await this.db.prepare('SELECT * FROM backup_settings WHERE id=1 FOR UPDATE').get();
+      const row = await this.backups.store.read({ lock: true });
       if (
         row.next_at <= this.now() &&
         !(await this.db
@@ -105,9 +105,7 @@ export class BackupWorker {
           .get())
       ) {
         await this.backups.insert(row, 'backup', 'scheduled');
-        await this.db
-          .prepare('UPDATE backup_settings SET next_at=? WHERE id=1')
-          .run(this.now() + row.settings.intervalHours * 3600000);
+        await this.backups.store.write({ next_at: this.now() + row.settings.intervalHours * 3600000 });
       }
       await this.db
         .prepare(
