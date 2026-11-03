@@ -10,8 +10,7 @@ async function fixture() {
   let time = Date.now(),
     app,
     base,
-    result = { status: 200 },
-    released;
+    result = { status: 200 };
   const sent = [];
   const options = {
     dataDir,

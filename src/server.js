@@ -14,7 +14,6 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Applications, defaultApp, validID } from './applications.js';
-import { channelCatalog } from './channels.js';
 import { allows, notificationAlgorithm } from './notification.js';
 import { DeliveryQueue } from './delivery.js';
 import { Observability } from './observability.js';
@@ -99,6 +98,8 @@ export async function createGateway({
                   await client.query('SELECT pg_advisory_unlock(hashtext(current_schema()), 72841102)');
               } catch (error) {
                 discard = true;
+                // The pool is still closed below; an unlock failure must reach the caller.
+                // eslint-disable-next-line no-unsafe-finally
                 throw error;
               } finally {
                 client.release(discard);
@@ -422,7 +423,6 @@ export async function createGateway({
             path,
             method: req.method,
             body,
-            params: url.searchParams,
             access,
             abuse,
             alerts,

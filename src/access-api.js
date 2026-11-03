@@ -1,4 +1,4 @@
-export async function accessAPI({ path, method, body, params, access, abuse, alerts, monitor, send, requestId }) {
+export async function accessAPI({ path, method, body, access, abuse, alerts, monitor, send, requestId }) {
   let result,
     action,
     appId = '';

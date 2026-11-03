@@ -2,9 +2,7 @@ let ctx;
 const LEFT = 62,
   RIGHT = 626,
   TOP = 24,
-  BOTTOM = 178,
-  WIDTH = 640,
-  HEIGHT = 210;
+  BOTTOM = 178;
 export function chartModel(samples, key) {
   const points = samples
     .map(s => ({
