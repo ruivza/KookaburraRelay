@@ -249,9 +249,19 @@ test('public status reads configuration without decrypting secrets or scanning d
       },
     });
     // The public status response only needs enabled flags and configured capabilities.
-    app.applications.channels.open = () => {
-      throw Error('Public status must not decrypt provider credentials');
+    const open = app.applications.channels.open;
+    const forbidDecryption = () => {
+      app.applications.channels.open = () => {
+        throw Error('Public status must not decrypt provider credentials');
+      };
     };
+    // Configuration changes go through the service methods, which decrypt to validate the stored keys.
+    const configure = async change => {
+      app.applications.channels.open = open;
+      await change();
+      forbidDecryption();
+    };
+    forbidDecryption();
     const ios = await status();
     assert.deepEqual(ios, {
       protocol: 1,
@@ -274,9 +284,9 @@ test('public status reads configuration without decrypting secrets or scanning d
       notificationEncryption: null,
       kinds: [],
     });
-    await app.db.prepare("UPDATE app_channels SET enabled=0 WHERE app_id='perch-mail' AND kind='apns'").run();
+    await configure(() => app.applications.configureChannel('perch-mail', 'apns', { enabled: false }));
     assert.equal((await status()).ready, false);
-    await app.db.prepare("UPDATE applications SET enabled=0 WHERE id='perch-mail'").run();
+    await configure(() => app.applications.update('perch-mail', { name: 'Mail', enabled: false }));
     assert.equal((await status('fcm')).ready, false);
     assert.ok(!queries.some(sql => /\b(delivery_jobs|registrations)\b/.test(sql)));
   } finally {

@@ -23,7 +23,18 @@ export class Database {
     this.pool.on('error', () => console.error('PostgreSQL connection interrupted'));
   }
   async query(sql, values = []) {
-    return (this.context.getStore() || this.pool).query(sql, values);
+    return (this.context.getStore()?.client || this.pool).query(sql, values);
+  }
+  // Runs fn once the current transaction commits, or now outside one. It also marks the transaction as having
+  // changed configuration, so ConfigCache reads inside it go to the database.
+  afterCommit(fn) {
+    const state = this.context.getStore();
+    if (!state) return fn();
+    state.changedConfiguration = true;
+    state.committed.push(fn);
+  }
+  changedConfiguration() {
+    return !!this.context.getStore()?.changedConfiguration;
   }
   prepare(sql) {
     let n = 0;
@@ -40,17 +51,20 @@ export class Database {
   async transaction(fn) {
     if (this.context.getStore()) return fn();
     const client = await this.pool.connect();
+    const state = { client, changedConfiguration: false, committed: [] };
+    let result;
     try {
       await client.query('BEGIN');
-      const result = await this.context.run(client, fn);
+      result = await this.context.run(state, fn);
       await client.query('COMMIT');
-      return result;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
     } finally {
       client.release();
     }
+    for (const hook of state.committed) hook();
+    return result;
   }
   async initialize() {
     await this.exec(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`);

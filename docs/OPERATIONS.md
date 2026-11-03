@@ -33,6 +33,8 @@ GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.1.3` and `ghcr.io/ruivza/ko
 
 Administrator tokens and backup defaults are imported only during their first database initialization. Later environment changes do not replace stored settings; a `GATEWAY_ADMIN_TOKEN` that differs from the stored token only logs a startup warning. Without `GATEWAY_ADMIN_TOKEN`, the first token is written to `admin.token`. Rotating the admin token invalidates sessions and replaces that file with a one-line note, so it no longer holds a usable token.
 
+The gateway keeps application, channel, notification, access-policy, trusted-server and quota settings in memory and refreshes them whenever they change through the console or admin API. After editing those tables directly in PostgreSQL, restart the gateway.
+
 ## Network and process ownership
 
 The console, `/auth/login`, `/admin/*`, `/v1/*`, health, and monitoring share port 3220. Backups expose no port; Compose does not publish PostgreSQL. Use an HTTPS reverse proxy and restrict console and management routes. Permit access to the Node listener only from the proxy.

@@ -1,5 +1,6 @@
 import { cancelJobs } from './delivery.js';
 import { RateLimiter } from './rate-limit.js';
+import { ConfigCache } from './config-cache.js';
 const DAY = 86400000;
 // A confirmed grant can be fetched again only for idempotent client retries; then its plaintext is erased.
 export const confirmReplay = 600000;
@@ -29,8 +30,8 @@ const ceilings = {
 // One gateway process owns each database. Memory admission happens before any DB work;
 // durable quotas are charged in the caller's transaction, so failed admission rolls back.
 export class AbuseProtection {
-  constructor({ db, now = Date.now }) {
-    Object.assign(this, { db, now });
+  constructor({ db, now = Date.now, cache = db && new ConfigCache(db) }) {
+    Object.assign(this, { db, now, cache });
     this.settings = { ...abuseDefaults };
     this.pendingRejections = new Map();
     // Full means refuse: admission and log sampling fail closed rather than reset live windows.
@@ -75,14 +76,11 @@ export class AbuseProtection {
     return result;
   }
   async effective(appId) {
-    const row = await this.db.prepare('SELECT settings FROM application_quotas WHERE app_id=?').get(appId);
-    return { ...this.settings, ...row?.settings };
+    return { ...this.settings, ...(await this.cache.quota(appId)) };
   }
   async appSettings(appId) {
-    if (!(await this.db.prepare('SELECT 1 FROM applications WHERE id=?').get(appId)))
-      throw Object.assign(Error('Application not found'), { status: 404 });
-    const row = await this.db.prepare('SELECT settings FROM application_quotas WHERE app_id=?').get(appId);
-    return { overrides: row?.settings || {}, effective: await this.effective(appId) };
+    if (!(await this.cache.application(appId))) throw Object.assign(Error('Application not found'), { status: 404 });
+    return { overrides: (await this.cache.quota(appId)) || {}, effective: await this.effective(appId) };
   }
   async saveApp(appId, input) {
     await this.appSettings(appId);
@@ -108,6 +106,7 @@ export class AbuseProtection {
         'INSERT INTO application_quotas VALUES(?,?) ON CONFLICT(app_id) DO UPDATE SET settings=excluded.settings',
       )
       .run(appId, JSON.stringify(input));
+    this.cache.invalidate('quota', appId);
     return this.appSettings(appId);
   }
   async flushRejections() {

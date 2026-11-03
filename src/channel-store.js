@@ -2,12 +2,25 @@ import { APNsChannel, channelCatalog } from './channels.js';
 import { FCMChannel } from './fcm.js';
 import { fail } from './util.js';
 export class ChannelStore {
-  constructor({ db, seal, open, providerFactory, fcmFactory }) {
-    Object.assign(this, { db, seal, open, providerFactory, fcmFactory });
+  constructor({ db, seal, open, providerFactory, fcmFactory, cache }) {
+    Object.assign(this, { db, seal, open, providerFactory, fcmFactory, cache });
     this.adapters = new Map();
   }
   async row(id, kind) {
     return await this.db.prepare('SELECT * FROM app_channels WHERE app_id=? AND kind=?').get(id, kind);
+  }
+  // The configuration is decrypted on first use and then cached like the adapter built from it: a resolve that
+  // hits the cache neither queries nor decrypts, and status checks that need only the flag never decrypt.
+  cached(id, kind) {
+    return this.cache.get('channel:' + id + ':' + kind, async () => {
+      const row = await this.row(id, kind);
+      if (!row) return null;
+      let config;
+      return { enabled: !!row.enabled, config: () => (config ??= JSON.parse(this.open(row.secret))) };
+    });
+  }
+  async enabled(id, kind) {
+    return !!(await this.cached(id, kind))?.enabled;
   }
   async describe(id, kind) {
     const row = await this.row(id, kind),
@@ -105,12 +118,13 @@ export class ChannelStore {
         'INSERT INTO app_channels VALUES(?,?,?,?) ON CONFLICT(app_id,kind) DO UPDATE SET enabled=excluded.enabled,secret=excluded.secret',
       )
       .run(id, kind, +prepared.enabled, encrypted);
+    this.cache.invalidate('channel', id);
   }
   async resolve(id, kind, environment) {
     if (!channelCatalog.find(c => c.id === kind)?.implemented) fail(501, 'Push channel not implemented');
-    const row = await this.row(id, kind);
-    if (!row || !row.enabled) fail(503, 'Application channel not configured or disabled');
-    const config = JSON.parse(this.open(row.secret));
+    const channel = await this.cached(id, kind);
+    if (!channel?.enabled) fail(503, 'Application channel not configured or disabled');
+    const config = channel.config();
     if (
       kind === 'apns'
         ? !['sandbox', 'production'].includes(environment) ||
@@ -119,7 +133,7 @@ export class ChannelStore {
     )
       fail(400, 'Environment not enabled for this application');
     const key = id + ':' + kind;
-    if (!this.adapters.has(key)) this.adapters.set(key, this.make(kind, config));
+    if (!this.adapters.has(key)) this.adapters.set(key, this.make(kind, { ...config }));
     return this.adapters.get(key);
   }
   invalidate(id) {

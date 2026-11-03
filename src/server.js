@@ -21,6 +21,7 @@ import { adminAPI } from './admin-api.js';
 import { deviceAPI } from './device-api.js';
 import { AbuseProtection } from './abuse.js';
 import { RateLimiter } from './rate-limit.js';
+import { ConfigCache } from './config-cache.js';
 import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
 // Logged routes and error codes never carry identifiers, bodies or messages.
 const routeOf = path => {
@@ -162,10 +163,11 @@ export async function createGateway({
     await security.initialize(adminToken);
     const backups = new Backups({ db, seal, open, security, now });
     await backups.initialize();
-    applications = new Applications({ db, seal, open, providerFactory, fcmFactory, now });
-    abuse = new AbuseProtection({ db, now });
+    const cache = new ConfigCache(db);
+    applications = new Applications({ db, seal, open, providerFactory, fcmFactory, now, cache });
+    abuse = new AbuseProtection({ db, now, cache });
     await abuse.initialize();
-    access = new AccessControl({ db, seal, open, now, abuse, appleVerifier, googleVerifier });
+    access = new AccessControl({ db, seal, open, now, abuse, appleVerifier, googleVerifier, cache });
     await access.initialize();
     queue = new DeliveryQueue({ db, applications, open, seal, now, abuse, access, autoStart: false });
     monitor = new Observability({ db, now, queue, backups });
@@ -241,10 +243,7 @@ export async function createGateway({
               await monitor.record({
                 kind: res.statusCode >= 400 ? 'error' : 'request',
                 action: req.method + ' ' + routeOf(path),
-                appId:
-                  validID(logApp) && (await db.prepare('SELECT 1 FROM applications WHERE id=?').get(logApp))
-                    ? logApp
-                    : '',
+                appId: validID(logApp) && (await cache.application(logApp)) ? logApp : '',
                 channel: req.gatewayScope?.channel || (['apns', 'fcm'].includes(body?.channel) ? body.channel : ''),
                 status: res.statusCode,
                 duration,

@@ -3,28 +3,30 @@ import { notificationSettings } from './notification.js';
 import { channelCatalog } from './channels.js';
 import { ChannelStore } from './channel-store.js';
 import { cancelJobs } from './delivery.js';
+import { ConfigCache } from './config-cache.js';
 import { fail } from './util.js';
 
 export const defaultApp = 'perch-mail';
 export const validID = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value);
 
 export class Applications {
-  constructor({ db, seal, open, providerFactory, fcmFactory, now = Date.now }) {
-    Object.assign(this, { db, seal, open, providerFactory, now });
-    this.channels = new ChannelStore({ db, seal, open, providerFactory, fcmFactory });
+  constructor({ db, seal, open, providerFactory, fcmFactory, now = Date.now, cache = new ConfigCache(db) }) {
+    Object.assign(this, { db, seal, open, providerFactory, now, cache });
+    this.channels = new ChannelStore({ db, seal, open, providerFactory, fcmFactory, cache });
     // Serialize configuration validation and mutation, including cross-app topic uniqueness.
     for (const method of ['create', 'update', 'configureChannel', 'removeChannel', 'remove']) {
       const perform = this[method].bind(this);
       this[method] = (...args) =>
         db.transaction(async () => {
           await db.query('SELECT pg_advisory_xact_lock(72841104)');
+          this.cache.writing();
           return perform(...args);
         });
     }
   }
   async row(id) {
     if (!validID(id)) fail(400, 'Invalid application ID');
-    const row = await this.db.prepare('SELECT * FROM applications WHERE id=?').get(id);
+    const row = await this.cache.application(id);
     if (!row) fail(404, 'Application not found');
     return row;
   }
@@ -59,15 +61,14 @@ export class Applications {
 
   async publicStatus(id, channel) {
     const row = await this.row(id);
-    const configured = await this.db
-      .prepare('SELECT enabled FROM app_channels WHERE app_id=? AND kind=?')
-      .get(id, channel);
-    return { ready: !!row.enabled && !!configured?.enabled, kinds: await this.capabilities(id, channel) };
+    return {
+      ready: !!row.enabled && (await this.channels.enabled(id, channel)),
+      kinds: await this.capabilities(id, channel),
+    };
   }
 
   async notifications(id) {
-    const row = await this.db.prepare('SELECT settings FROM application_notifications WHERE app_id=?').get(id);
-    return notificationSettings(row?.settings);
+    return notificationSettings((await this.cache.notifications(id)) ?? undefined);
   }
   async saveNotifications(id, settings) {
     await this.db
@@ -75,6 +76,7 @@ export class Applications {
         'INSERT INTO application_notifications(app_id,settings) VALUES(?,?::jsonb) ON CONFLICT(app_id) DO UPDATE SET settings=excluded.settings',
       )
       .run(id, JSON.stringify(settings));
+    this.cache.invalidate('notifications', id);
   }
   async capabilities(id, channel) {
     const config = await this.notifications(id);
@@ -90,6 +92,7 @@ export class Applications {
     if (await this.db.prepare('SELECT 1 FROM applications WHERE id=?').get(body.id))
       fail(409, 'Application ID already exists');
     await this.db.prepare('INSERT INTO applications VALUES(?,?,1,?,NULL)').run(body.id, body.name.trim(), randomUUID());
+    this.cache.invalidateApplication(body.id);
     await this.saveNotifications(body.id, notifications);
     return await this.describe(body.id);
   }
@@ -98,6 +101,7 @@ export class Applications {
   }
   async invalidate(id) {
     await this.db.prepare('UPDATE applications SET revision=? WHERE id=?').run(randomUUID(), id);
+    this.cache.invalidate('app', id);
     await this.db.prepare('DELETE FROM registrations WHERE app_id=?').run(id);
     await cancelJobs(this.db, this.now(), 'ConfigurationChanged', 'app_id=?', [id]);
   }
@@ -113,6 +117,7 @@ export class Applications {
       await this.db
         .prepare('UPDATE applications SET name=?,enabled=? WHERE id=?')
         .run(body.name.trim(), +body.enabled, id);
+      this.cache.invalidate('app', id);
       if (body.notifications !== undefined) await this.saveNotifications(id, notifications);
       if (prepared) await this.channels.save(id, 'apns', prepared);
       if (changed) await this.invalidate(id);
@@ -143,6 +148,7 @@ export class Applications {
     if (!['apns', 'fcm'].includes(kind)) fail(404, 'Channel not found');
     await this.db.transaction(async () => {
       await this.db.prepare('DELETE FROM app_channels WHERE app_id=? AND kind=?').run(id, kind);
+      this.cache.invalidate('channel', id);
       if (kind === 'apns') await this.db.prepare('UPDATE applications SET secret=NULL WHERE id=?').run(id);
       await this.invalidate(id);
     });
@@ -155,6 +161,8 @@ export class Applications {
       await this.invalidate(id);
       await this.db.prepare('DELETE FROM app_channels WHERE app_id=?').run(id);
       await this.db.prepare('DELETE FROM applications WHERE id=?').run(id);
+      // Notification, quota and access settings cascade with the application row.
+      this.cache.invalidateApplication(id);
     });
     this.channels.invalidate(id);
     return { deleted: true };
@@ -165,7 +173,7 @@ export class Applications {
     return { revision: row.revision, adapter: await this.channels.resolve(id, channel, environment) };
   }
   async current(entry) {
-    const row = await this.db.prepare('SELECT * FROM applications WHERE id=?').get(entry.app_id);
+    const row = await this.cache.application(entry.app_id);
     return row?.enabled && row.revision === entry.app_revision;
   }
   close() {

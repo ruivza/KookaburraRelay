@@ -3,6 +3,7 @@ import { defaultApp, validID } from './applications.js';
 import { requestedKinds } from './notification.js';
 import { verifyApple, GoogleIntegrity, googleCredential } from './integrity.js';
 import { cancelJobs } from './delivery.js';
+import { ConfigCache } from './config-cache.js';
 import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
 export const accessDefaults = Object.freeze({
   requireTrustedServers: false,
@@ -55,8 +56,17 @@ export function registrationBinding(body) {
   );
 }
 export class AccessControl {
-  constructor({ db, seal, open, now = Date.now, abuse, appleVerifier = verifyApple, googleVerifier }) {
-    Object.assign(this, { db, seal, open, now, abuse, appleVerifier });
+  constructor({
+    db,
+    seal,
+    open,
+    now = Date.now,
+    abuse,
+    appleVerifier = verifyApple,
+    googleVerifier,
+    cache = new ConfigCache(db),
+  }) {
+    Object.assign(this, { db, seal, open, now, abuse, appleVerifier, cache });
     this.google = googleVerifier ?? new GoogleIntegrity({ now });
     this.verifying = 0;
   }
@@ -83,9 +93,8 @@ export class AccessControl {
     await this.cleaning;
   }
   async policy(appId) {
-    if (!validID(appId) || !(await this.db.prepare('SELECT 1 FROM applications WHERE id=?').get(appId)))
-      fail(404, 'Application not found');
-    const row = await this.db.prepare('SELECT * FROM access_policies WHERE app_id=?').get(appId);
+    if (!validID(appId) || !(await this.cache.application(appId))) fail(404, 'Application not found');
+    const row = await this.cache.policy(appId);
     return {
       settings: { ...accessDefaults, ...row?.settings },
       revision: row?.revision ?? 'initial',
@@ -150,6 +159,7 @@ export class AccessControl {
     const credential = input.googleServiceAccount ? googleCredential(input.googleServiceAccount) : null;
     await this.db.transaction(async () => {
       await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
+      this.cache.writing();
       const previous = await this.policy(appId),
         encrypted = credential ? this.seal(JSON.stringify(credential)) : previous.secret;
       if (settings.androidRequired && !encrypted) fail(400, 'Google verification credential required');
@@ -158,6 +168,7 @@ export class AccessControl {
           'INSERT INTO access_policies VALUES(?,?,?,?) ON CONFLICT(app_id) DO UPDATE SET settings=excluded.settings,revision=excluded.revision,google_secret=excluded.google_secret',
         )
         .run(appId, JSON.stringify(settings), randomUUID(), encrypted);
+      this.cache.invalidate('policy', appId);
       await cancelJobs(this.db, this.now(), 'AccessPolicyChanged', 'app_id=?', [appId]);
       await this.db.prepare('DELETE FROM registrations WHERE app_id=?').run(appId);
       await this.db.prepare('DELETE FROM integrity_keys WHERE app_id=?').run(appId);
@@ -184,6 +195,7 @@ export class AccessControl {
       fail(400, 'Invalid server application');
     await this.db.transaction(async () => {
       await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
+      this.cache.writing();
       if ((await this.db.prepare('SELECT count(*) n FROM trusted_servers').get()).n >= 1000)
         fail(409, 'Server directory full');
       for (const id of body.apps) await this.policy(id);
@@ -192,6 +204,7 @@ export class AccessControl {
       await this.db
         .prepare("INSERT INTO trusted_servers VALUES(?,?,'pending',NULL,?,?,?)")
         .run(body.id, body.name.trim(), JSON.stringify([...new Set(body.apps)]), randomUUID(), this.now());
+      this.cache.invalidate('server', body.id);
     });
     return { id: body.id, state: 'pending' };
   }
@@ -200,12 +213,14 @@ export class AccessControl {
     const credential = body.action === 'block' ? null : randomSecret();
     await this.db.transaction(async () => {
       await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
+      this.cache.writing();
       const row = await this.db.prepare('SELECT * FROM trusted_servers WHERE id=? FOR UPDATE').get(id);
       if (!row) fail(404, 'Server not found');
       if (body.action === 'rotate' && row.state !== 'approved') fail(409, 'Server is not approved');
       await this.db
         .prepare('UPDATE trusted_servers SET state=?,credential_hash=?,revision=? WHERE id=?')
         .run(credential ? 'approved' : 'blocked', credential ? sha256Hex(credential) : null, randomUUID(), id);
+      this.cache.invalidate('server', id);
       await this.db.prepare('DELETE FROM server_tickets WHERE server_id=?').run(id);
       await cancelJobs(
         this.db,
@@ -246,7 +261,7 @@ export class AccessControl {
     return { ticket, expiresAt };
   }
   async registrationServer(body, policy, consume = false) {
-    const row = await this.db.prepare('SELECT * FROM trusted_servers WHERE id=?').get(body.serverId);
+    const row = await this.cache.server(body.serverId);
     if (row?.state === 'blocked') fail(403, 'Server blocked');
     if (!body.serverTicket) {
       if (policy.settings.requireTrustedServers) fail(403, 'Server ticket required');
@@ -401,7 +416,7 @@ export class AccessControl {
   }
   async commitRegistration(body, grant) {
     if ((await this.policy(body.appId ?? defaultApp)).revision !== grant.revision) fail(409, 'Access policy changed');
-    const row = await this.db.prepare('SELECT * FROM trusted_servers WHERE id=?').get(body.serverId);
+    const row = await this.cache.server(body.serverId);
     if (
       row?.state === 'blocked' ||
       (grant.server && (!row || row.state !== 'approved' || row.revision !== grant.server.revision))
@@ -410,13 +425,13 @@ export class AccessControl {
   }
   async delivery(req, entry) {
     const policy = await this.policy(entry.app_id);
-    const row = await this.db.prepare('SELECT state FROM trusted_servers WHERE id=?').get(entry.server_id);
+    const row = await this.cache.server(entry.server_id);
     if (row?.state === 'blocked') fail(403, 'Server blocked');
     if (policy.settings.requireTrustedServers || entry.trusted_server)
       await this.authenticateServer(req.headers['x-relay-server-credential'], entry.app_id, entry.server_id);
   }
   async active(entry) {
-    const row = await this.db.prepare('SELECT state FROM trusted_servers WHERE id=?').get(entry.server_id);
+    const row = await this.cache.server(entry.server_id);
     return row?.state !== 'blocked' && (!entry.trusted_server || row?.state === 'approved');
   }
 }
