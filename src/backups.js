@@ -2,9 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { storageSettings, validateTarget } from './storage-target.js';
 export { validateTarget } from './storage-target.js';
 import { validateRecipient } from './backup-crypto.js';
-const fail = (status, message) => {
-  throw Object.assign(Error(message), { status });
-};
+import { fail } from './util.js';
 export const backupDefaults = {
   enabled: false,
   endpoint: '',

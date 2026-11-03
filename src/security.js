@@ -1,16 +1,13 @@
 import QRCode from 'qrcode';
-import { randomBytes, createHash, createHmac, timingSafeEqual, scrypt } from 'node:crypto';
+import { randomBytes, createHmac, timingSafeEqual, scrypt } from 'node:crypto';
 import { promisify } from 'node:util';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs';
+import { fail, randomSecret, sha256Hex } from './util.js';
 // Replaces the bootstrap token after a rotation; backups keep copying the file, but it holds no secret.
 export const rotatedMarker =
   '# Kookaburra Relay admin token was changed in the console and is not stored in this file.';
-const derive = promisify(scrypt),
-  digest = s => createHash('sha256').update(s).digest('hex');
-const fail = (status, message) => {
-  throw Object.assign(Error(message), { status });
-};
+const derive = promisify(scrypt);
 // Exclusive temp file plus rename: a symlink planted at the target is replaced, never written through.
 function replaceFile(path, content) {
   const temp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
@@ -104,7 +101,7 @@ export class Security {
     if (!token) {
       token = existsSync(this.adminPath) ? readFileSync(this.adminPath, 'utf8').trim() : '';
       if (!token || token === rotatedMarker) {
-        token = randomBytes(32).toString('base64url');
+        token = randomSecret();
         replaceFile(this.adminPath, token);
       }
       if (token.length < 32) throw Error('Gateway admin token must be at least 32 characters');
@@ -129,7 +126,7 @@ export class Security {
         }
     } else {
       const hashes = row.recovery_hashes,
-        hash = digest(code.toLowerCase().replace(/\s/g, ''));
+        hash = sha256Hex(code.toLowerCase().replace(/\s/g, ''));
       const index = hashes.findIndex(h => equal(h, hash));
       if (index >= 0) {
         hashes.splice(index, 1);
@@ -149,21 +146,23 @@ export class Security {
       if (!(await verifyToken(body.token, row.token_hash))) fail(401, 'Unauthorized');
       if (row.totp_secret && !body.code) return { requiresSecondFactor: true };
       await this.factor(row, body.code);
-      const session = randomBytes(32).toString('base64url'),
+      const session = randomSecret(),
         expires = this.now() + 8 * 3600000;
       await this.db.prepare('DELETE FROM admin_sessions WHERE expires<=?').run(this.now());
-      await this.db.prepare('INSERT INTO admin_sessions VALUES(?,?)').run(digest(session), expires);
+      await this.db.prepare('INSERT INTO admin_sessions VALUES(?,?)').run(sha256Hex(session), expires);
       return { session, expires };
     });
   }
   async authenticate(value) {
     if (
-      !(await this.db.prepare('SELECT 1 FROM admin_sessions WHERE hash=? AND expires>?').get(digest(value), this.now()))
+      !(await this.db
+        .prepare('SELECT 1 FROM admin_sessions WHERE hash=? AND expires>?')
+        .get(sha256Hex(value), this.now()))
     )
       fail(401, 'Unauthorized');
   }
   async logout(value) {
-    await this.db.prepare('DELETE FROM admin_sessions WHERE hash=?').run(digest(value));
+    await this.db.prepare('DELETE FROM admin_sessions WHERE hash=?').run(sha256Hex(value));
   }
   async status() {
     const row = await this.db.prepare('SELECT totp_secret,recovery_hashes FROM admin_security WHERE id=1').get();
@@ -228,7 +227,7 @@ export class Security {
         .prepare(
           'UPDATE admin_security SET totp_secret=pending_secret,pending_secret=NULL,pending_until=NULL,recovery_hashes=? WHERE id=1',
         )
-        .run(JSON.stringify(codes.map(digest)));
+        .run(JSON.stringify(codes.map(sha256Hex)));
       await this.db.exec('DELETE FROM admin_sessions');
       return { recoveryCodes: codes, signInAgain: true };
     });

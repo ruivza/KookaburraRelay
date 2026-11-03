@@ -1,8 +1,6 @@
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { deliveryContent, allows } from './notification.js';
-const fail = (status, message) => {
-  throw Object.assign(Error(message), { status });
-};
+import { fail, sha256Hex } from './util.js';
 const terminal = new Set(['accepted', 'failed', 'unknown', 'cancelled']);
 const invalidToken = result =>
   result.status === 410 || ['BadDeviceToken', 'DeviceTokenNotForTopic', 'UNREGISTERED'].includes(result.reason);
@@ -87,7 +85,7 @@ export class DeliveryQueue {
   async enqueue(entry, { mode = 'async', requestId, kind = 'sync', notification, alert } = {}) {
     const content = deliveryContent(kind, notification, alert, this.now());
     const encoded = content ? JSON.stringify(content) : '';
-    const contentHash = encoded ? createHash('sha256').update(encoded).digest('hex') : '';
+    const contentHash = encoded ? sha256Hex(encoded) : '';
     const job = await this.db.transaction(async () => {
       await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
       await this.db.query('SELECT pg_advisory_xact_lock(72841103)');
@@ -100,11 +98,7 @@ export class DeliveryQueue {
       if (this.stopping) fail(503, 'Gateway shutting down');
       if (mode === 'async' && (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(requestId)))
         fail(400, 'A requestId of 16-100 letters, numbers, underscores or hyphens is required');
-      const dedupe = requestId
-        ? createHash('sha256')
-            .update(entry.id + ':' + requestId)
-            .digest('hex')
-        : null;
+      const dedupe = requestId ? sha256Hex(entry.id + ':' + requestId) : null;
       if (dedupe) {
         const previous = await this.db.prepare('SELECT * FROM delivery_jobs WHERE dedupe=?').get(dedupe);
         if (previous) {

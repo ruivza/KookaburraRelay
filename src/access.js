@@ -1,12 +1,8 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { defaultApp, validID } from './applications.js';
 import { requestedKinds } from './notification.js';
 import { verifyApple, GoogleIntegrity, googleCredential } from './integrity.js';
-const hash = v => createHash('sha256').update(v).digest('hex');
-const secret = () => randomBytes(32).toString('base64url');
-const fail = (status, message) => {
-  throw Object.assign(Error(message), { status });
-};
+import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
 export const accessDefaults = Object.freeze({
   requireTrustedServers: false,
   iosRequired: false,
@@ -36,7 +32,7 @@ export function registrationBinding(body) {
   )
     fail(400, 'Invalid registration');
   const kinds = requestedKinds(body).slice().sort();
-  return hash(
+  return sha256Hex(
     JSON.stringify([
       appId,
       channel,
@@ -133,7 +129,7 @@ export class AccessControl {
     if (
       !Array.isArray(p.certificateDigests) ||
       p.certificateDigests.length > 10 ||
-      p.certificateDigests.some(d => typeof d !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(d))
+      p.certificateDigests.some(d => !isToken43(d))
     )
       fail(400, 'Invalid signing certificate digests');
     if (
@@ -199,7 +195,7 @@ export class AccessControl {
   }
   async updateServer(id, body) {
     if (!['approve', 'block', 'rotate'].includes(body.action)) fail(400, 'Invalid server action');
-    const credential = body.action === 'block' ? null : secret();
+    const credential = body.action === 'block' ? null : randomSecret();
     await this.db.transaction(async () => {
       await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
       const row = await this.db.prepare('SELECT * FROM trusted_servers WHERE id=? FOR UPDATE').get(id);
@@ -207,7 +203,7 @@ export class AccessControl {
       if (body.action === 'rotate' && row.state !== 'approved') fail(409, 'Server is not approved');
       await this.db
         .prepare('UPDATE trusted_servers SET state=?,credential_hash=?,revision=? WHERE id=?')
-        .run(credential ? 'approved' : 'blocked', credential ? hash(credential) : null, randomUUID(), id);
+        .run(credential ? 'approved' : 'blocked', credential ? sha256Hex(credential) : null, randomUUID(), id);
       await this.db.prepare('DELETE FROM server_tickets WHERE server_id=?').run(id);
       await this.db
         .prepare(
@@ -219,16 +215,17 @@ export class AccessControl {
     return { id, state: credential ? 'approved' : 'blocked', ...(credential ? { credential } : {}) };
   }
   async authenticateServer(credential, appId, serverId) {
-    if (typeof credential !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(credential))
-      fail(403, 'Server credential required');
-    const row = await this.db.prepare('SELECT * FROM trusted_servers WHERE credential_hash=?').get(hash(credential));
+    if (!isToken43(credential)) fail(403, 'Server credential required');
+    const row = await this.db
+      .prepare('SELECT * FROM trusted_servers WHERE credential_hash=?')
+      .get(sha256Hex(credential));
     if (!row || row.state !== 'approved' || row.id !== serverId || !row.apps.includes(appId))
       fail(403, 'Server not authorized');
     return row;
   }
   async ticket(credential, body) {
     if (!validID(body.appId) || !validID(body.deviceId) || !validID(body.serverId)) fail(400, 'Invalid ticket request');
-    const ticket = secret(),
+    const ticket = randomSecret(),
       expiresAt = this.now() + 300000;
     await this.db.transaction(async () => {
       await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
@@ -240,7 +237,7 @@ export class AccessControl {
         fail(503, 'Server ticket capacity reached');
       await this.db
         .prepare('INSERT INTO server_tickets VALUES(?,?,?,?,?,?)')
-        .run(hash(ticket), row.id, body.appId, body.deviceId, row.revision, expiresAt);
+        .run(sha256Hex(ticket), row.id, body.appId, body.deviceId, row.revision, expiresAt);
     });
     return { ticket, expiresAt };
   }
@@ -251,11 +248,10 @@ export class AccessControl {
       if (policy.settings.requireTrustedServers) fail(403, 'Server ticket required');
       return null;
     }
-    if (typeof body.serverTicket !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.serverTicket))
-      fail(403, 'Invalid server ticket');
+    if (!isToken43(body.serverTicket)) fail(403, 'Invalid server ticket');
     const ticket = await this.db
       .prepare('SELECT * FROM server_tickets WHERE hash=? AND expires>?')
-      .get(hash(body.serverTicket), this.now());
+      .get(sha256Hex(body.serverTicket), this.now());
     if (
       !ticket ||
       !row ||
@@ -267,7 +263,7 @@ export class AccessControl {
       ticket.revision !== row.revision
     )
       fail(403, 'Invalid server ticket');
-    if (consume) await this.db.prepare('DELETE FROM server_tickets WHERE hash=?').run(hash(body.serverTicket));
+    if (consume) await this.db.prepare('DELETE FROM server_tickets WHERE hash=?').run(sha256Hex(body.serverTicket));
     return { id: row.id, revision: row.revision };
   }
   async registrationEnabled(appId) {
@@ -296,7 +292,7 @@ export class AccessControl {
       )
         this.abuse.reject('integrity_challenge_capacity', 60, 503);
       const id = randomUUID(),
-        payload = 'relay-register-v1:' + secret() + ':' + binding,
+        payload = 'relay-register-v1:' + randomSecret() + ':' + binding,
         expiresAt = this.now() + 300000;
       const keyKnown =
         typeof body.keyId === 'string' &&

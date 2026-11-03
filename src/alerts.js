@@ -3,9 +3,7 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { createHmac, randomUUID } from 'node:crypto';
 import { requirePublic } from './net-guard.js';
-const fail = (status, message) => {
-  throw Object.assign(Error(message), { status });
-};
+import { fail } from './util.js';
 export const alertDefaults = Object.freeze({
   enabled: false,
   rejections: 100,

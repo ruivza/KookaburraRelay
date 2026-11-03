@@ -1,8 +1,6 @@
 import { APNsChannel, channelCatalog } from './channels.js';
 import { FCMChannel } from './fcm.js';
-const fail = (status, message) => {
-  throw Object.assign(Error(message), { status });
-};
+import { fail } from './util.js';
 export class ChannelStore {
   constructor({ db, seal, open, providerFactory, fcmFactory }) {
     Object.assign(this, { db, seal, open, providerFactory, fcmFactory });

@@ -9,7 +9,7 @@ import { Maintenance } from './maintenance.js';
 import http from 'node:http';
 import { Security } from './security.js';
 import { Database } from './database.js';
-import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,11 +20,7 @@ import { Observability } from './observability.js';
 import { adminAPI } from './admin-api.js';
 import { deviceAPI } from './device-api.js';
 import { AbuseProtection } from './abuse.js';
-const hash = value => createHash('sha256').update(value).digest('hex');
-const secret = () => randomBytes(32).toString('base64url');
-const fail = (status, message) => {
-  throw Object.assign(Error(message), { status });
-};
+import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
 // Logged routes and error codes never carry identifiers, bodies or messages.
 const routeOf = path => {
   const route = path
@@ -177,7 +173,7 @@ export async function createGateway({
     // check above has already authenticated it.
     await db.exec('UPDATE applications SET secret=NULL WHERE secret IS NOT NULL');
     const monitorPath = resolve(dataDir, 'monitor.token');
-    if (!existsSync(monitorPath)) writeFileSync(monitorPath, secret(), { mode: 0o600, flag: 'wx' });
+    if (!existsSync(monitorPath)) writeFileSync(monitorPath, randomSecret(), { mode: 0o600, flag: 'wx' });
     const monitorToken = readFileSync(monitorPath, 'utf8').trim();
     // Only unauthenticated enrollment keys share a row cap; operator, login and sender keys never fail on capacity.
     const enrollmentKey = /^(enroll-ip|enroll-token|confirm-ip):/;
@@ -209,10 +205,10 @@ export async function createGateway({
       return req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
     }
     async function device(req, body) {
-      if (!/^[A-Za-z0-9_-]{43}$/.test(bearer(req))) fail(410, 'Registration expired or revoked');
+      if (!isToken43(bearer(req))) fail(410, 'Registration expired or revoked');
       const value = await db
         .prepare('SELECT * FROM registrations WHERE delivery_hash=? AND expires>?')
-        .get(hash(bearer(req)), now());
+        .get(sha256Hex(bearer(req)), now());
       if (!value || !(await applications.current(value))) fail(410, 'Registration expired or revoked');
       if (
         value.app_id !== (body.appId ?? defaultApp) ||
@@ -326,7 +322,7 @@ export async function createGateway({
         }
         if (path === '/monitor/report' || path === '/metrics') {
           await limit('probe:' + req.rateKey, 120, 60000);
-          if (!timingSafeEqual(Buffer.from(hash(bearer(req))), Buffer.from(hash(monitorToken))))
+          if (!timingSafeEqual(Buffer.from(sha256Hex(bearer(req))), Buffer.from(sha256Hex(monitorToken))))
             fail(401, 'Unauthorized');
         }
         if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
@@ -485,8 +481,6 @@ export async function createGateway({
           queue,
           now,
           limit,
-          hash,
-          secret,
           seal,
           open,
           bearer,

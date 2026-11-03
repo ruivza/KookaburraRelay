@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { fail } from './util.js';
 const DAY = 86400000;
 export const defaults = {
   enabled: true,
@@ -12,9 +13,6 @@ export const defaults = {
   runsDays: 30,
 };
 const kinds = ['requests', 'errors', 'audit', 'jobs', 'metrics', 'probes', 'runs', 'expired'];
-const fail = (status, message) => {
-  throw Object.assign(Error(message), { status });
-};
 export class Maintenance {
   constructor({ db, now = Date.now, runId }) {
     Object.assign(this, { db, now, runId });

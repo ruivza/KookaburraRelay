@@ -3,9 +3,7 @@ import { requestedKinds } from './notification.js';
 import { channelCatalog } from './channels.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { confirmReplay } from './abuse.js';
-const fail = (status, message) => {
-  throw Object.assign(Error(message), { status });
-};
+import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
 export async function deviceAPI({
   req,
   path,
@@ -16,8 +14,6 @@ export async function deviceAPI({
   queue,
   now,
   limit,
-  hash,
-  secret,
   seal,
   open,
   bearer,
@@ -55,14 +51,14 @@ export async function deviceAPI({
     try {
       await limit('enroll-ip:' + appId + ':' + req.rateKey, 60);
       const normalizedToken = channel === 'apns' ? body.deviceToken.toLowerCase() : body.deviceToken;
-      const tokenHash = hash(appId + ':' + channel + ':' + body.environment + ':' + normalizedToken);
+      const tokenHash = sha256Hex(appId + ':' + channel + ':' + body.environment + ':' + normalizedToken);
       await limit('enroll-token:' + tokenHash, 6);
       const accessGrant = await access.prepareRegistration(body, req.rateKey);
       const route = await applications.resolve(appId, channel, body.environment);
       const enabled = await applications.capabilities(appId, channel);
       if (kinds.some(k => !enabled.includes(k))) fail(403, 'Notification capability disabled for application');
       id = randomUUID();
-      const challenge = secret();
+      const challenge = randomSecret();
       const expiresAt = now() + 300000;
       await db.transaction(async () => {
         await db.query('SELECT pg_advisory_xact_lock(72841104)');
@@ -86,7 +82,7 @@ export async function deviceAPI({
             tokenHash,
             body.environment,
             body.nonce,
-            hash(challenge),
+            sha256Hex(challenge),
             expiresAt,
             appId,
             channel,
@@ -146,7 +142,7 @@ export async function deviceAPI({
         entry.app_id !== (body.appId ?? defaultApp) ||
         typeof body.challenge !== 'string' ||
         body.nonce !== entry.nonce ||
-        !timingSafeEqual(Buffer.from(hash(body.challenge)), Buffer.from(entry.challenge_hash || '0'.repeat(64)))
+        !timingSafeEqual(Buffer.from(sha256Hex(body.challenge)), Buffer.from(entry.challenge_hash || '0'.repeat(64)))
       )
         fail(403, 'Invalid device proof');
       req.gatewayScope = { appId: entry.app_id, channel: entry.channel };
@@ -164,8 +160,8 @@ export async function deviceAPI({
         appId: entry.app_id,
         purpose: entry.purpose,
         kinds: entry.kinds,
-        credential: secret(),
-        revokeToken: secret(),
+        credential: randomSecret(),
+        revokeToken: randomSecret(),
         expiresAt: now() + 30 * 86400000,
       };
       await db.transaction(async () => {
@@ -179,8 +175,8 @@ export async function deviceAPI({
             'UPDATE registrations SET delivery_hash=?,revoke_hash=?,credentials=?,expires=?,confirmed_at=? WHERE id=?',
           )
           .run(
-            hash(credentials.credential),
-            hash(credentials.revokeToken),
+            sha256Hex(credentials.credential),
+            sha256Hex(credentials.revokeToken),
             seal(JSON.stringify(credentials)),
             credentials.expiresAt,
             now(),
@@ -194,14 +190,14 @@ export async function deviceAPI({
   }
   const revoke = path.match(/^\/v1\/registrations\/([A-Za-z0-9_-]+)$/);
   if (revoke && req.method === 'DELETE') {
-    if (!/^[A-Za-z0-9_-]{43}$/.test(bearer(req))) return send(200, { revoked: true });
+    if (!isToken43(bearer(req))) return send(200, { revoked: true });
     await db.transaction(async () => {
       await db.query('SELECT pg_advisory_xact_lock(72841103)');
       const owned = await db
         .prepare('SELECT id FROM registrations WHERE id=? AND revoke_hash=?')
-        .get(revoke[1], hash(bearer(req)));
+        .get(revoke[1], sha256Hex(bearer(req)));
       if (owned) await queue.cancelRegistration(owned.id);
-      await db.prepare('DELETE FROM registrations WHERE id=? AND revoke_hash=?').run(revoke[1], hash(bearer(req)));
+      await db.prepare('DELETE FROM registrations WHERE id=? AND revoke_hash=?').run(revoke[1], sha256Hex(bearer(req)));
     });
     return send(200, { revoked: true });
   }
@@ -238,10 +234,10 @@ export async function deviceAPI({
   }
   const task = path.match(/^\/v1\/jobs\/([A-Za-z0-9_-]+)$/);
   if (task && req.method === 'GET') {
-    if (!/^[A-Za-z0-9_-]{43}$/.test(bearer(req))) fail(410, 'Registration expired or revoked');
+    if (!isToken43(bearer(req))) fail(410, 'Registration expired or revoked');
     const entry = await db
       .prepare('SELECT * FROM registrations WHERE delivery_hash=? AND expires>?')
-      .get(hash(bearer(req)), now());
+      .get(sha256Hex(bearer(req)), now());
     if (!entry || !(await applications.current(entry))) fail(410, 'Registration expired or revoked');
     await access.delivery(req, entry);
     const job = await queue.get(task[1]);

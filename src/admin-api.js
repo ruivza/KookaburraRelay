@@ -1,7 +1,5 @@
 import { channelCatalog } from './channels.js';
-const fail = (status, message) => {
-  throw Object.assign(Error(message), { status });
-};
+import { fail } from './util.js';
 function pagination(params) {
   const page = Number(params.get('page') || 1);
   if (!Number.isSafeInteger(page) || page < 1 || page > 100000) fail(400, 'Invalid page');

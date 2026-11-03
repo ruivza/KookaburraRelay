@@ -2,11 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { notificationSettings } from './notification.js';
 import { channelCatalog } from './channels.js';
 import { ChannelStore } from './channel-store.js';
+import { fail } from './util.js';
 
 export const defaultApp = 'perch-mail';
-const fail = (status, message) => {
-  throw Object.assign(Error(message), { status });
-};
 export const validID = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value);
 
 export class Applications {
