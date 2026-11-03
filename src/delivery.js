@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { deliveryContent, allows } from './notification.js';
-import { fail, sha256Hex } from './util.js';
+import { DAY, backoff, fail, sha256Hex } from './util.js';
 const terminal = new Set(['accepted', 'failed', 'unknown', 'cancelled']);
 const pending = ['queued', 'retrying', 'sending'];
 // Cancels the jobs matching `where` (trusted SQL with ? placeholders) and drops their stored content.
@@ -126,11 +126,12 @@ export class DeliveryQueue {
       if (mode === 'async' && (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(requestId)))
         fail(400, 'A requestId of 16-100 letters, numbers, underscores or hyphens is required');
       const dedupe = requestId ? sha256Hex(entry.id + ':' + requestId) : null;
-      // One read for the duplicate request, the queue cap and this device's active job.
+      // One read for the duplicate request, the queue cap and this device's active job. The cap check asks whether
+      // a 10,000th pending job exists, so it stops reading at the cap instead of counting the whole queue.
       const check = await this.db
         .prepare(
           `SELECT previous.id previous,previous.kind previous_kind,previous.notification_hash previous_hash,
-          (SELECT count(*) FROM delivery_jobs WHERE state IN ('queued','retrying','sending')) queued,
+          EXISTS(SELECT 1 FROM delivery_jobs WHERE state IN ('queued','retrying','sending') OFFSET 9999) queue_full,
           EXISTS(SELECT 1 FROM delivery_jobs WHERE registration_id=? AND state IN ('queued','retrying','sending')) pending
           FROM (SELECT 1) one LEFT JOIN delivery_jobs previous ON previous.dedupe=?`,
         )
@@ -142,7 +143,7 @@ export class DeliveryQueue {
       }
       // Sends to different devices no longer serialize, so concurrent ones can pass this check together and
       // overshoot the cap by at most the requests in flight.
-      if (check.queued >= 10000) fail(503, 'Queue capacity reached');
+      if (check.queue_full) fail(503, 'Queue capacity reached');
       // One active sync hint per registration, also prevents legacy/async overlap.
       if (check.pending || (entry.last_sent && this.now() - entry.last_sent < 60000)) fail(429, 'Device rate limit');
       const id = randomUUID(),
@@ -167,7 +168,7 @@ export class DeliveryQueue {
           time,
           time,
           time,
-          Math.min(entry.expires, time + 86400000, content?.encryptedNotification?.expires ?? Infinity),
+          Math.min(entry.expires, time + DAY, content?.encryptedNotification?.expires ?? Infinity),
           kind,
           encoded ? this.seal(encoded) : null,
           contentHash,
@@ -179,8 +180,8 @@ export class DeliveryQueue {
     if (mode === 'async' && this.timer) this.wake();
     return job;
   }
-  async cancelRegistration(id) {
-    await cancelJobs(this.db, this.now(), 'RegistrationRevoked', 'registration_id=?', [id]);
+  async cancelRegistration(id, reason = 'RegistrationRevoked') {
+    await cancelJobs(this.db, this.now(), reason, 'registration_id=?', [id]);
   }
   async cancel(id) {
     const job = await this.get(id);
@@ -305,10 +306,8 @@ export class DeliveryQueue {
           : Date.parse(header) - this.now()
         : 0;
       next +=
-        Math.max(
-          Math.min(3600000, Number.isFinite(retryAfter) ? retryAfter : 0),
-          Math.min(3600000, 60000 * 2 ** (attempts - 1)),
-        ) + Math.floor(Math.random() * 5000);
+        Math.max(Math.min(3600000, Number.isFinite(retryAfter) ? retryAfter : 0), backoff(attempts)) +
+        Math.floor(Math.random() * 5000);
       if (next < job.expires) state = 'retrying';
     }
     const reason =
@@ -326,7 +325,14 @@ export class DeliveryQueue {
       .get(state, status, reason, this.now(), next, Math.round(performance.now() - start), state, id);
     // A job cancelled during the send keeps its cancellation and its registration.
     if (!recorded) return await this.get(id);
-    if (invalidToken(result)) await this.db.prepare('DELETE FROM registrations WHERE id=?').run(entry.id);
+    // The token is dead for all of this registration's work: revoke it like every other path, the registration row
+    // before its jobs, so its other waiting jobs are cancelled now with this reason, not found orphaned later.
+    if (invalidToken(result))
+      await this.db.transaction(async () => {
+        if (!(await this.db.prepare('SELECT 1 FROM registrations WHERE id=? FOR UPDATE').get(entry.id))) return;
+        await this.cancelRegistration(entry.id, 'DeviceTokenInvalid');
+        await this.db.prepare('DELETE FROM registrations WHERE id=?').run(entry.id);
+      });
     return recorded;
   }
   async legacy(entry, kind = 'sync', notification, alert) {

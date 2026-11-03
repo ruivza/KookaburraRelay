@@ -7,7 +7,10 @@ config=${GATEWAY_CONFIG_FILE:-/gateway-config.env}
 retention=${BACKUP_RETENTION_DAYS:-14}
 # The backup worker passes the age public key from the console's backup settings.
 recipient=${BACKUP_AGE_RECIPIENT:-}
+# The gateway's schema, with the gateway's default; Compose sets relay. The worker passes its own.
+schema=${GATEWAY_DATABASE_SCHEMA:-public}
 case "$retention" in ''|*[!0-9]*) echo 'Invalid backup retention' >&2; exit 1;; esac
+case "$schema" in [!a-z_]*|*[!a-z0-9_]*) echo 'Invalid GATEWAY_DATABASE_SCHEMA' >&2; exit 1;; esac
 [ "$retention" -ge 1 ] && [ "$retention" -le 3650 ]
 mkdir -p "$root"
 chmod 700 "$root"
@@ -22,12 +25,12 @@ done
 if [ -e "$data/admin.token" ]; then cp "$data/admin.token" "$stage/admin.token"; else : > "$stage/admin.token"; fi
 [ "$(wc -c < "$stage/master.key" | tr -d ' ')" = 32 ]
 cp "$config" "$stage/.env"
-pg_dump --no-owner --no-privileges --format=custom --schema=relay --file="$stage/database.dump"
+pg_dump --no-owner --no-privileges --format=custom --schema="$schema" --file="$stage/database.dump"
 # Key rotation is not implemented, but reject an inconsistent snapshot if an
 # operator changes the key file while the transaction snapshot is being dumped.
 cmp "$data/master.key" "$stage/master.key"
 pg_restore --list "$stage/database.dump" > /dev/null
-printf 'format=1\nschema=relay\ncreated=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stage/metadata"
+printf 'format=1\nschema=%s\ncreated=%s\n' "$schema" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stage/metadata"
 (cd "$stage" && sha256sum database.dump master.key admin.token monitor.token .env metadata > SHA256SUMS && sha256sum -c SHA256SUMS > /dev/null)
 name="relay-$(date -u +%Y%m%dT%H%M%SZ)-${stage##*.}.tar"
 if [ -n "$recipient" ]; then

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Take a request's handler slot only after its body has been read, so clients sending a body slowly can no longer hold the 64 slots every caller shares; console files and `/healthz` take no slot. Count `/admin/` requests against their rate limit before the session lookup.
+- Tighten the console's Content-Security-Policy with `base-uri 'none'`, `object-src 'none'` and `form-action 'self'`, and send `Referrer-Policy: no-referrer` on every response.
+- Answer malformed `/admin/logs`, `/admin/jobs` and `/admin/devices` filters with 400 instead of 500, and index `gateway_logs(kind,time)`, `gateway_logs(app_id,time)` and `delivery_jobs(state,created)` for those listings (migration 008).
+- Add `GATEWAY_LEGACY_WORKERS` for the number of synchronous send slots (default 4, previously fixed).
+- Saving an access policy whose settings did not change, and without a new Google service account, no longer revokes the application's registrations.
+- A device token the provider reports invalid now cancels that registration's other waiting jobs at once, with reason `DeviceTokenInvalid`, instead of leaving them to be found a cycle later.
+- Cache Google OAuth tokens per service-account credential (up to 32), so several Android applications verified by one gateway no longer evict each other's token.
+- The backup worker and `ops/backup-once.sh` default `GATEWAY_DATABASE_SCHEMA` to `public` like the gateway instead of `relay`; bundles record the dumped schema and `ops/verify-backup.sh` restores that schema. Compose deployments, which set `relay`, are unchanged.
+- The rejections alert webhook sends `value` as a number, like the other alerts.
+- Run maintenance cleanup statements on their own connection instead of the request pool, and check the delivery queue cap without counting every pending job.
+
 ## 0.3.0 — 2026-11-03
 
 Client- and operator-visible changes; read before upgrading.

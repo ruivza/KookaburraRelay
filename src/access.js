@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { defaultApp, validID } from './applications.js';
+import { appIdOf, validID } from './applications.js';
 import { requestedKinds } from './notification.js';
 import { verifyApple, GoogleIntegrity, googleCredential } from './integrity.js';
 import { cancelJobs } from './delivery.js';
 import { ConfigCache } from './config-cache.js';
-import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
+import { DAY, fail, isPlainObject, isToken43, randomSecret, sha256Hex } from './util.js';
 export const accessDefaults = Object.freeze({
   requireTrustedServers: false,
   iosRequired: false,
@@ -19,7 +19,7 @@ export const accessDefaults = Object.freeze({
 // Field checks shared by registration and its integrity challenge. APNs tokens are compared lowercased.
 // Protocol 2 registrations name their application; protocol 1 may omit it for the default application.
 export function validateRegistration(body) {
-  const appId = body.appId ?? defaultApp,
+  const appId = appIdOf(body),
     channel = body.channel ?? 'apns',
     protocol = body.protocol ?? 1;
   if (
@@ -103,12 +103,8 @@ export class AccessControl {
     return { settings: p.settings, hasGoogleCredential: !!p.secret, revision: p.revision };
   }
   validate(input) {
-    if (
-      !input ||
-      typeof input !== 'object' ||
-      Array.isArray(input) ||
-      Object.keys(input).some(k => !(k in accessDefaults))
-    )
+    // Own keys only: `in` would also accept inherited names such as toString or __proto__.
+    if (!isPlainObject(input) || Object.keys(input).some(k => !Object.hasOwn(accessDefaults, k)))
       fail(400, 'Invalid access policy');
     const p = { ...accessDefaults, ...input };
     for (const name of ['requireTrustedServers', 'iosRequired', 'androidRequired'])
@@ -152,6 +148,10 @@ export class AccessControl {
       const previous = await this.policy(appId),
         encrypted = credential ? this.seal(JSON.stringify(credential)) : previous.secret;
       if (settings.androidRequired && !encrypted) fail(400, 'Google verification credential required');
+      // Saving the stored values again, as the console does when nothing was edited, keeps the revision and every
+      // registration. Both sides are normalized over accessDefaults, so their keys are in the same order; a supplied
+      // Google credential always counts as a change.
+      if (!credential && JSON.stringify(settings) === JSON.stringify(previous.settings)) return;
       await this.db
         .prepare(
           'INSERT INTO access_policies VALUES(?,?,?,?) ON CONFLICT(app_id) DO UPDATE SET settings=excluded.settings,revision=excluded.revision,google_secret=excluded.google_secret',
@@ -238,8 +238,8 @@ export class AccessControl {
     await this.db.transaction(async () => {
       const row = await this.authenticateServer(credential, body.appId, body.serverId);
       await this.policy(body.appId);
-      await this.abuse.quota('tickets:global', 20000, 86400000, 'server_ticket_quota');
-      await this.abuse.quota('tickets:server:' + row.id, 5000, 86400000, 'server_ticket_quota');
+      await this.abuse.quota('tickets:global', 20000, DAY, 'server_ticket_quota');
+      await this.abuse.quota('tickets:server:' + row.id, 5000, DAY, 'server_ticket_quota');
       if ((await this.db.prepare('SELECT count(*) n FROM server_tickets WHERE expires>?').get(this.now())).n >= 2000)
         fail(503, 'Server ticket capacity reached');
       await this.db
@@ -264,10 +264,10 @@ export class AccessControl {
       !ticket ||
       !row ||
       row.state !== 'approved' ||
-      !row.apps.includes(body.appId ?? defaultApp) ||
+      !row.apps.includes(appIdOf(body)) ||
       ticket.server_id !== body.serverId ||
       ticket.device_id !== body.deviceId ||
-      ticket.app_id !== (body.appId ?? defaultApp) ||
+      ticket.app_id !== appIdOf(body) ||
       ticket.revision !== row.revision
     )
       fail(403, 'Invalid server ticket');
@@ -281,7 +281,7 @@ export class AccessControl {
   async challenge(body, address) {
     const registration = body.registration,
       binding = registrationBinding(registration ?? {}),
-      appId = registration.appId ?? defaultApp,
+      appId = appIdOf(registration),
       channel = registration.channel ?? 'apns';
     if (
       !this.abuse.memory('integrity:challenge:' + address, 20) ||
@@ -322,7 +322,7 @@ export class AccessControl {
     });
   }
   async prepareRegistration(body, address) {
-    const appId = body.appId ?? defaultApp,
+    const appId = appIdOf(body),
       channel = body.channel ?? 'apns',
       binding = registrationBinding(body);
     const policy = await this.policy(appId),
@@ -343,8 +343,8 @@ export class AccessControl {
       try {
         // Count failed/remote verification attempts too; these quotas commit independently.
         await this.db.transaction(async () => {
-          await this.abuse.quota('integrity:global', 10000, 86400000, 'integrity_daily');
-          await this.abuse.quota('integrity:app:' + appId, 5000, 86400000, 'integrity_daily');
+          await this.abuse.quota('integrity:global', 10000, DAY, 'integrity_daily');
+          await this.abuse.quota('integrity:app:' + appId, 5000, DAY, 'integrity_daily');
         });
         const challenge = await this.db
           .prepare(
@@ -401,14 +401,14 @@ export class AccessControl {
             'INSERT INTO integrity_keys VALUES(?,?,?,?,?,?) ON CONFLICT(app_id,key_id) DO ' +
               (current ? 'UPDATE SET counter=excluded.counter,expires=excluded.expires' : 'NOTHING'),
           )
-          .run(appId, keyId, result.publicKey, result.counter, policy.revision, this.now() + 90 * 86400000);
+          .run(appId, keyId, result.publicKey, result.counter, policy.revision, this.now() + 90 * DAY);
         if (!stored.changes) fail(403, 'Application assertion replayed');
       }
       return { revision: policy.revision, server };
     });
   }
   async commitRegistration(body, grant) {
-    if ((await this.policy(body.appId ?? defaultApp)).revision !== grant.revision) fail(409, 'Access policy changed');
+    if ((await this.policy(appIdOf(body))).revision !== grant.revision) fail(409, 'Access policy changed');
     // Read under a share lock, not from the cache: blocking or rotating the server takes its row FOR UPDATE and
     // then deletes its registrations, so it either waits for this registration to commit or is seen by it.
     const row = await this.db.prepare('SELECT * FROM trusted_servers WHERE id=? FOR SHARE').get(body.serverId);

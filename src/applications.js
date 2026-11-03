@@ -7,6 +7,8 @@ import { ConfigCache } from './config-cache.js';
 import { fail } from './util.js';
 
 export const defaultApp = 'perch-mail';
+// Protocol 1 requests may omit the application and mean the default one; protocol 2 always names it.
+export const appIdOf = body => body?.appId ?? defaultApp;
 export const validID = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value);
 const jobCounts = `SELECT app_id,count(*) FILTER (WHERE state='accepted') accepted,
   count(*) FILTER (WHERE state IN ('failed','unknown')) failed FROM delivery_jobs`;

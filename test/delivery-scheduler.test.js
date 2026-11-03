@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DeliveryQueue } from '../src/delivery.js';
+import { createGateway } from './helpers.mjs';
 const deferred = () => {
   let resolve;
   const promise = new Promise(r => (resolve = r));
@@ -107,4 +111,68 @@ test('background database failure waits for the timer instead of hot-looping', a
   } finally {
     await f.queue.close();
   }
+});
+test('a send rejected for its device token cancels the registration and its other waiting work at once', async t => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'relay-invalid-token-'));
+  const sent = [];
+  let result = { status: 200 };
+  const app = await createGateway({
+    dataDir,
+    adminToken: 'invalid-token-operator'.repeat(3),
+    autoStart: false,
+    providerFactory: () => ({
+      async send(device, token, payload) {
+        sent.push(payload);
+        return result;
+      },
+      close() {},
+    }),
+  });
+  t.after(async () => {
+    await app.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  const call = async (path, body) =>
+    (
+      await fetch('http://127.0.0.1:' + app.server.address().port + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    ).json();
+  await app.applications.update('perch-mail', {
+    name: 'Mail',
+    enabled: true,
+    apns: { privateKey: 'key', keyId: 'ABCDEFGHIJ', teamId: '0123456789', topic: 'com.example.mail' },
+  });
+  const registration = await call('/v1/registrations', {
+    deviceId: 'phone',
+    serverId: 'server',
+    deviceToken: 'a'.repeat(64),
+    environment: 'sandbox',
+    nonce: 'n'.repeat(40),
+  });
+  const proof = sent.find(p => p.perchRegistration?.id === registration.registrationId).perchRegistration;
+  const grant = await call('/v1/registrations/' + proof.id + '/confirm', proof);
+  const entry = await app.db.prepare('SELECT * FROM registrations WHERE id=?').get(grant.registrationId);
+  const first = await app.queue.enqueue(entry, { requestId: 'invalid-token-0001' });
+  // Admission allows one active job per device, so the second waiting job is written directly.
+  await app.db
+    .prepare(
+      `INSERT INTO delivery_jobs(id,registration_id,app_id,channel,device_id,mode,state,created,updated,next_at,expires,kind)
+      SELECT 'second',registration_id,app_id,channel,device_id,mode,'queued',created+1,updated,next_at,expires,kind
+      FROM delivery_jobs WHERE id=?`,
+    )
+    .run(first.id);
+  result = { status: 410, reason: 'Unregistered' };
+  const count = sent.length;
+  assert.equal((await app.queue.execute(first.id)).state, 'failed');
+  // Cancelled by the same send, not orphaned until a later cycle finds its registration gone.
+  const second = await app.queue.get('second');
+  assert.equal(second.state, 'cancelled');
+  assert.equal(second.reason, 'DeviceTokenInvalid');
+  assert.equal(await app.db.prepare('SELECT 1 FROM registrations WHERE id=?').get(entry.id), undefined);
+  await app.queue.flush();
+  assert.equal(sent.length, count + 1);
 });

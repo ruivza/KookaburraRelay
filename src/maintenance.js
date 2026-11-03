@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { fail } from './util.js';
+import { fail, DAY, isPlainObject } from './util.js';
 import { expireRegistrations } from './expiry.js';
 import { SettingsStore } from './settings-store.js';
-const DAY = 86400000;
 export const defaults = {
   enabled: true,
   intervalHours: 24,
@@ -22,7 +21,7 @@ export class Maintenance {
     this.busy = false;
   }
   validate(value) {
-    if (!value || typeof value.enabled !== 'boolean') fail(400, 'Invalid retention settings');
+    if (!isPlainObject(value) || typeof value.enabled !== 'boolean') fail(400, 'Invalid retention settings');
     const settings = { enabled: value.enabled };
     for (const key of Object.keys(defaults).filter(k => k !== 'enabled')) {
       const n = value[key];
@@ -157,41 +156,45 @@ export class Maintenance {
     const deleted = {};
     let partial = false;
     try {
-      for (const p of plan) {
-        deleted[p.kind] ??= 0;
-        for (let i = 0; i < 200; i++) {
-          if (this.stopping) {
-            partial = true;
-            break;
+      // Batches, expiry transactions and bookkeeping run on the dedicated connection, each statement still under the
+      // 15 s statement timeout. A failure is recorded through the pool, since that connection may be what failed.
+      await this.db.using(client, async () => {
+        for (const p of plan) {
+          deleted[p.kind] ??= 0;
+          for (let i = 0; i < 200; i++) {
+            if (this.stopping) {
+              partial = true;
+              break;
+            }
+            // Expired registrations leave together with their work, as everywhere else they expire.
+            const changes =
+              p.table === 'registrations'
+                ? await expireRegistrations(this.db, p.values[0])
+                : (
+                    await this.db
+                      .prepare(
+                        `WITH batch AS (SELECT ctid FROM ${p.table} WHERE ${p.where} LIMIT 1000 FOR UPDATE SKIP LOCKED) DELETE FROM ${p.table} WHERE ctid IN (SELECT ctid FROM batch)`,
+                      )
+                      .run(...p.values)
+                  ).changes;
+            deleted[p.kind] += changes;
+            await this.db.prepare('UPDATE maintenance_runs SET deleted=? WHERE id=?').run(JSON.stringify(deleted), id);
+            if (changes < 1000) break;
+            if (i === 199) partial = true;
+            await new Promise(resolve => setTimeout(resolve, 20));
           }
-          // Expired registrations leave together with their work, as everywhere else they expire.
-          const changes =
-            p.table === 'registrations'
-              ? await expireRegistrations(this.db, p.values[0])
-              : (
-                  await this.db
-                    .prepare(
-                      `WITH batch AS (SELECT ctid FROM ${p.table} WHERE ${p.where} LIMIT 1000 FOR UPDATE SKIP LOCKED) DELETE FROM ${p.table} WHERE ctid IN (SELECT ctid FROM batch)`,
-                    )
-                    .run(...p.values)
-                ).changes;
-          deleted[p.kind] += changes;
-          await this.db.prepare('UPDATE maintenance_runs SET deleted=? WHERE id=?').run(JSON.stringify(deleted), id);
-          if (changes < 1000) break;
-          if (i === 199) partial = true;
-          await new Promise(resolve => setTimeout(resolve, 20));
         }
-      }
-      await this.db
-        .prepare('UPDATE admin_security SET pending_secret=NULL,pending_until=NULL WHERE pending_until<=?')
-        .run(this.now());
-      await this.db.prepare('DELETE FROM maintenance_previews WHERE expires<=?').run(this.now());
-      await this.db
-        .prepare('UPDATE maintenance_runs SET status=?,finished=? WHERE id=?')
-        .run(partial ? 'partial' : 'completed', this.now(), id);
-      await this.db.exec(
-        "DELETE FROM maintenance_runs WHERE id IN (SELECT id FROM maintenance_runs WHERE status<>'running' ORDER BY started DESC OFFSET 100)",
-      );
+        await this.db
+          .prepare('UPDATE admin_security SET pending_secret=NULL,pending_until=NULL WHERE pending_until<=?')
+          .run(this.now());
+        await this.db.prepare('DELETE FROM maintenance_previews WHERE expires<=?').run(this.now());
+        await this.db
+          .prepare('UPDATE maintenance_runs SET status=?,finished=? WHERE id=?')
+          .run(partial ? 'partial' : 'completed', this.now(), id);
+        await this.db.exec(
+          "DELETE FROM maintenance_runs WHERE id IN (SELECT id FROM maintenance_runs WHERE status<>'running' ORDER BY started DESC OFFSET 100)",
+        );
+      });
     } catch (error) {
       console.error('Maintenance failed:', error.code || 'unknown');
       await this.db

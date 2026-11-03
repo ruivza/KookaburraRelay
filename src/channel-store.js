@@ -1,6 +1,6 @@
 import { APNsChannel, channelCatalog } from './channels.js';
 import { FCMChannel } from './fcm.js';
-import { fail } from './util.js';
+import { fail, isPlainObject } from './util.js';
 
 // Channel identifiers are plain columns and `secret` seals only the private key. Rows from before 0.2.0 sealed the
 // whole configuration there; backfill() converts them at startup, and reads accept both.
@@ -109,7 +109,7 @@ export class ChannelStore {
   }
   async prepare(id, kind, body) {
     if (!channelCatalog.find(c => c.id === kind)?.implemented) fail(501, 'Push channel not implemented');
-    if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'Invalid channel configuration');
+    if (!isPlainObject(body)) fail(400, 'Invalid channel configuration');
     const row = await this.row(id, kind),
       previous = row ? this.config(kind, row) : null;
     let config;
@@ -140,7 +140,7 @@ export class ChannelStore {
         fail(409, 'Apple topic and environment already assigned');
     } else {
       const account = body.serviceAccount;
-      if (account !== undefined && (!account || typeof account !== 'object' || account.type !== 'service_account'))
+      if (account !== undefined && (!isPlainObject(account) || account.type !== 'service_account'))
         fail(400, 'Invalid service account JSON');
       config = account
         ? { projectId: account.project_id, clientEmail: account.client_email, privateKey: account.private_key }

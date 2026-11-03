@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -183,6 +184,49 @@ test('proof challenge binds the full request, expires, cannot replay and uses mo
     await f.close();
   }
 });
+test('saving an unchanged access policy keeps registrations, work and the revision; a change revokes them', async () => {
+  const f = await fixture();
+  const registered = async grant =>
+    !!(await f.app.db.prepare('SELECT 1 FROM registrations WHERE id=?').get(grant.registrationId));
+  try {
+    // Defaults saved over no stored policy change nothing either.
+    assert.equal((await f.policy({})).revision, 'initial');
+    const saved = await f.policy({ cloudProjectNumber: '123' });
+    assert.notEqual(saved.revision, 'initial');
+    const grant = await f.enroll(f.input());
+    const entry = await f.app.db.prepare('SELECT * FROM registrations WHERE id=?').get(grant.registrationId);
+    const job = await f.app.queue.enqueue(entry, { requestId: 'unchanged-policy-0001' });
+    // The console sends every field back when an operator presses Save without editing anything.
+    const again = await f.app.access.savePolicy('perch-mail', { settings: saved.settings });
+    assert.equal(again.revision, saved.revision);
+    assert.ok(await registered(grant));
+    assert.equal((await f.app.queue.get(job.id)).state, 'queued');
+    const changed = await f.policy({ cloudProjectNumber: '456' });
+    assert.notEqual(changed.revision, saved.revision);
+    assert.ok(!(await registered(grant)));
+    const cancelled = await f.app.queue.get(job.id);
+    assert.equal(cancelled.state, 'cancelled');
+    assert.equal(cancelled.reason, 'AccessPolicyChanged');
+    // A supplied Google credential is a change even with the same settings.
+    const next = await f.enroll(f.input(2));
+    const replaced = await f.app.access.savePolicy('perch-mail', {
+      settings: changed.settings,
+      googleServiceAccount: {
+        type: 'service_account',
+        client_email: 'verifier@project.iam.gserviceaccount.com',
+        private_key: generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({
+          type: 'pkcs8',
+          format: 'pem',
+        }),
+      },
+    });
+    assert.notEqual(replaced.revision, changed.revision);
+    assert.equal(replaced.hasGoogleCredential, true);
+    assert.ok(!(await registered(next)));
+  } finally {
+    await f.close();
+  }
+});
 test('concurrent assertions admit at most one transition from the same key counter', async () => {
   const f = await fixture();
   try {
@@ -274,7 +318,7 @@ for (const change of ['policy', 'server'])
         alert: { title: 'Private title', body: 'Private body' },
       });
       assert.ok(job.notification);
-      if (change === 'policy') await f.policy({});
+      if (change === 'policy') await f.policy({ cloudProjectNumber: '123' });
       else await f.app.access.updateServer('server', { action: 'block' });
       const cancelled = await f.app.queue.get(job.id);
       assert.equal(cancelled.state, 'cancelled');

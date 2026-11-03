@@ -97,7 +97,7 @@ test('device proof, scoped credentials, ownership transfer and revocation', asyn
   }
 });
 
-test('registration lookups by device token and server use indexes', async () => {
+test('registration lookups by device token and server, and filtered log listings, use indexes', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'perch-gateway-index-'));
   const app = await createGateway({ dataDir: dir, adminToken: 'operator'.repeat(8), autoStart: false });
   try {
@@ -112,11 +112,16 @@ test('registration lookups by device token and server use indexes', async () => 
           'SELECT id FROM registrations WHERE challenge_hash IS NOT NULL AND delivery_hash IS NOT NULL AND (confirmed_at IS NULL OR confirmed_at<=$1) LIMIT 1000',
           0,
         ),
+        // The counts behind console log listings filtered by kind or application.
+        await plan('SELECT count(*) n FROM gateway_logs WHERE kind=$1'),
+        await plan('SELECT count(*) n FROM gateway_logs WHERE app_id=$1'),
       ];
     });
     assert.match(plans[0], /registration_token/);
     assert.match(plans[1], /registration_server/);
     assert.match(plans[2], /registration_replayable/);
+    assert.match(plans[3], /gateway_log_kind_time/);
+    assert.match(plans[4], /gateway_log_app_time/);
   } finally {
     await app.close();
     rmSync(dir, { recursive: true, force: true });

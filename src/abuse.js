@@ -2,7 +2,7 @@ import { cleanupExpired } from './expiry.js';
 import { RateLimiter } from './rate-limit.js';
 import { ConfigCache } from './config-cache.js';
 import { SettingsStore } from './settings-store.js';
-const DAY = 86400000;
+import { DAY, fail, isPlainObject } from './util.js';
 export const abuseDefaults = Object.freeze({
   registrationEnabled: true,
   registrationGlobalMinute: 300,
@@ -50,13 +50,8 @@ export class AbuseProtection {
     await this.cleanup();
   }
   validate(input) {
-    if (
-      !input ||
-      typeof input !== 'object' ||
-      Array.isArray(input) ||
-      Object.keys(input).some(k => !(k in abuseDefaults))
-    )
-      throw Object.assign(Error('Invalid abuse settings'), { status: 400 });
+    if (!isPlainObject(input) || Object.keys(input).some(k => !Object.hasOwn(abuseDefaults, k)))
+      fail(400, 'Invalid abuse settings');
     const result = { ...abuseDefaults, ...input };
     for (const [key, value] of Object.entries(result)) {
       if (
@@ -64,7 +59,7 @@ export class AbuseProtection {
           ? typeof value !== 'boolean'
           : !Number.isSafeInteger(value) || value < 1 || value > (ceilings[key] || 10000000)
       )
-        throw Object.assign(Error('Invalid abuse settings'), { status: 400 });
+        fail(400, 'Invalid abuse settings');
     }
     return result;
   }
@@ -72,7 +67,7 @@ export class AbuseProtection {
     return { ...this.settings, ...(await this.cache.quota(appId)) };
   }
   async appSettings(appId) {
-    if (!(await this.cache.application(appId))) throw Object.assign(Error('Application not found'), { status: 404 });
+    if (!(await this.cache.application(appId))) fail(404, 'Application not found');
     return { overrides: (await this.cache.quota(appId)) || {}, effective: await this.effective(appId) };
   }
   async saveApp(appId, input) {
@@ -86,13 +81,8 @@ export class AbuseProtection {
       'taskDeviceDay',
       'attemptAppDay',
     ];
-    if (
-      !input ||
-      typeof input !== 'object' ||
-      Array.isArray(input) ||
-      Object.keys(input).some(k => !allowed.includes(k))
-    )
-      throw Object.assign(Error('Invalid application quotas'), { status: 400 });
+    if (!isPlainObject(input) || Object.keys(input).some(k => !allowed.includes(k)))
+      fail(400, 'Invalid application quotas');
     this.validate(input);
     await this.db
       .prepare(
@@ -148,10 +138,15 @@ export class AbuseProtection {
   memory(key, maximum, window = 60000) {
     return !this.limiter.take(key, maximum, window);
   }
+  // Counts a request against its source's and the global per-minute budgets, before any other work.
   admit(address) {
     // Only requests their source may make reach the shared bucket; one flood cannot starve everyone.
     if (!this.memory('http:' + address, 600)) this.reject('request_source');
     if (!this.memory('http:global', 6000)) this.reject('request_global');
+  }
+  // One of 64 handler slots, taken once the request body has been read: a client that sends its body slowly
+  // waits outside the gate instead of holding a slot every other caller needs. Returns the release.
+  slot() {
     if (this.requests >= 64) this.reject('request_concurrency', 5, 503);
     this.requests++;
     let released = false;

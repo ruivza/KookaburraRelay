@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { signJWT } from './jwt.js';
 
 const endpoint = 'https://oauth2.googleapis.com/token';
+const capacity = 32;
 
 // Provider requests time out after 10 s, refuse redirects and cap the body at 64 KiB. Owners that
 // abort in-flight requests on close() pass the Set their controllers are tracked in.
@@ -25,19 +26,24 @@ export async function boundedFetch(fetcher, url, options, active) {
   }
 }
 
-// Service-account access tokens for one scope, from the fixed Google endpoint only. One token is cached,
-// keyed by credential; concurrent refreshes for that credential share a promise, and a refresh superseded
-// by another credential or by invalidate() never replaces the cache. Transport failures propagate as
-// thrown; a rejected or malformed token response throws with its HTTP `responseStatus`.
+// Service-account access tokens for one scope, from the fixed Google endpoint only. Tokens are cached per
+// credential, so one instance can serve several applications' service accounts; at most 32 are kept, the oldest
+// stored dropped first. Concurrent refreshes for a credential share a promise, and a refresh superseded by
+// invalidate() never replaces the cache. Transport failures propagate as thrown; a rejected or malformed token
+// response throws with its HTTP `responseStatus`.
 export class GoogleOAuth {
   constructor({ scope, fetcher = fetch, now = Date.now }) {
     Object.assign(this, { scope, fetcher, now, controllers: new Set() });
+    this.cached = new Map();
+    this.pending = new Map();
   }
   async token({ clientEmail, privateKey }) {
     const key = createHash('sha256').update(clientEmail).update('\0').update(privateKey).digest('hex');
-    if (this.cached?.key === key && this.cached.expires > this.now() + 60000) return this.cached.token;
-    if (this.pending?.key === key) return this.pending.promise;
-    const pending = (this.pending = { key });
+    const cached = this.cached.get(key);
+    if (cached && cached.expires > this.now() + 60000) return cached.token;
+    if (this.pending.has(key)) return this.pending.get(key).promise;
+    const pending = {};
+    this.pending.set(key, pending);
     pending.promise = (async () => {
       const started = this.now(),
         iat = Math.floor(started / 1000);
@@ -63,20 +69,26 @@ export class GoogleOAuth {
       if (!response.ok || typeof body?.access_token !== 'string' || !body.access_token)
         throw Object.assign(Error('Google OAuth token request failed'), { responseStatus: response.status });
       // A token without a whole-second lifetime beyond the refresh margin is used once, never cached.
-      if (this.pending === pending && Number.isSafeInteger(body.expires_in) && body.expires_in > 60)
-        this.cached = { key, token: body.access_token, expires: started + Math.min(3600, body.expires_in) * 1000 };
+      if (this.pending.get(key) === pending && Number.isSafeInteger(body.expires_in) && body.expires_in > 60) {
+        // Re-inserting moves the credential to the newest position.
+        this.cached.delete(key);
+        this.cached.set(key, { token: body.access_token, expires: started + Math.min(3600, body.expires_in) * 1000 });
+        if (this.cached.size > capacity) this.cached.delete(this.cached.keys().next().value);
+      }
       return body.access_token;
     })();
     try {
       return await pending.promise;
     } finally {
-      if (this.pending === pending) this.pending = null;
+      if (this.pending.get(key) === pending) this.pending.delete(key);
     }
   }
   // Forget a token the provider rejected; with no argument, forget everything including refreshes in flight.
   invalidate(token) {
-    if (token === undefined) this.cached = this.pending = null;
-    else if (this.cached?.token === token) this.cached = null;
+    if (token === undefined) {
+      this.cached.clear();
+      this.pending.clear();
+    } else for (const [key, entry] of this.cached) if (entry.token === token) this.cached.delete(key);
   }
   close() {
     for (const controller of this.controllers) controller.abort();

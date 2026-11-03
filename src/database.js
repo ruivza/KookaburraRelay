@@ -37,6 +37,10 @@ export class Database {
     await client.connect();
     return client;
   }
+  // Runs fn with its statements, and any transaction it begins, on `client` (from dedicated()) instead of the pool.
+  using(client, fn) {
+    return this.context.run({ client }, fn);
+  }
   async query(sql, values = []) {
     return (this.context.getStore()?.client || this.pool).query(sql, values);
   }
@@ -47,7 +51,7 @@ export class Database {
   // the database.
   onCommit(fn) {
     const state = this.context.getStore();
-    if (!state) {
+    if (!state?.transaction) {
       fn('before');
       return fn('after');
     }
@@ -78,7 +82,7 @@ export class Database {
   // transaction usable. Commit hooks run when the outermost transaction commits.
   async transaction(fn) {
     const outer = this.context.getStore();
-    if (outer) {
+    if (outer?.transaction) {
       const savepoint = 'nested_' + ++outer.savepoints;
       await outer.client.query('SAVEPOINT ' + savepoint);
       try {
@@ -90,8 +94,9 @@ export class Database {
         throw error;
       }
     }
-    const client = await this.pool.connect();
-    const state = { client, changedConfiguration: false, committed: [], savepoints: 0 };
+    // Inside using(), the transaction runs on that connection, which stays the caller's.
+    const client = outer?.client ?? (await this.pool.connect());
+    const state = { client, transaction: true, changedConfiguration: false, committed: [], savepoints: 0 };
     let result,
       committing = false;
     try {
@@ -105,7 +110,7 @@ export class Database {
       await client.query('ROLLBACK');
       throw error;
     } finally {
-      client.release();
+      if (!outer) client.release();
     }
     for (const hook of state.committed) hook('after');
     return result;

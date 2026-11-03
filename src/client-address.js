@@ -1,4 +1,5 @@
 import { BlockList, isIP } from 'node:net';
+import { fail } from './util.js';
 
 export function normalizeIP(value) {
   if (typeof value !== 'string' || !isIP(value) || value.includes('%')) throw Error('Invalid IP address');
@@ -52,16 +53,15 @@ export function clientAddressResolver(value = '') {
     if (!isTrusted(peer)) return peer;
     const header = req.headers['x-forwarded-for'];
     if (header === undefined) return peer;
-    if (typeof header !== 'string' || header.length > 2048)
-      throw Object.assign(Error('Invalid forwarding header'), { status: 400 });
+    if (typeof header !== 'string' || header.length > 2048) fail(400, 'Invalid forwarding header');
     const hops = header.split(',');
-    if (hops.length > 32) throw Object.assign(Error('Too many proxy hops'), { status: 400 });
+    if (hops.length > 32) fail(400, 'Too many proxy hops');
     let current = peer;
     for (let index = hops.length - 1; index >= 0 && isTrusted(current); index--) {
       try {
         current = normalizeIP(hops[index].trim());
       } catch {
-        throw Object.assign(Error('Invalid forwarding header'), { status: 400 });
+        fail(400, 'Invalid forwarding header');
       }
     }
     return current;

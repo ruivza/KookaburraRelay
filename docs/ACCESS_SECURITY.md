@@ -1,6 +1,6 @@
 # Access policies
 
-New applications do not require App Attest, Play Integrity, or approved servers. Webhook alerts are disabled by default. Verify integration support before enabling a policy. Saving an access policy revokes the application's registrations, pending jobs, integrity challenges, and stored attestation keys.
+New applications do not require App Attest, Play Integrity, or approved servers. Webhook alerts are disabled by default. Verify integration support before enabling a policy. Saving an access policy whose settings changed, or supplying a Google service account, revokes the application's registrations, pending jobs, integrity challenges, and stored attestation keys; saving the stored values unchanged keeps them.
 
 ## Server approval
 
@@ -54,7 +54,7 @@ Daily quotas are stored in PostgreSQL and reset at UTC midnight; restarts, re-re
 
 Defaults include 300/global and 120/application registrations per minute; 10,000/global and 5,000/application reception challenges per day; 2,000/global and 1,000/application pending registrations; and four concurrent reception challenges. New jobs: 100,000/global, 50,000/application, 240/device per day. Delivery attempts: 150,000/global, 75,000/application per day.
 
-Requests also have process-level admission limits before database work: 6,000/global and 600/source per minute, and 64 active handlers. Per-address, per-device and per-application limits on login, console, enrollment, confirmation and sending are also counted in memory. All of these reset on restart; daily quotas are stored in PostgreSQL and persist. At most 20,000 enrollment and confirmation keys are tracked at once; beyond that new enrollments get 503 `limit_capacity`. Other keys never fail on capacity. Resource rejection returns 429 or 503 with a stable `reason` and `Retry-After`; use exponential backoff and jitter.
+Requests also have process-level admission limits: every request first counts against 6,000/global and 600/source per minute, before any database work. Once its body has been read, a request also needs one of 64 handler slots (503 `request_concurrency` when none is free), so clients sending bodies slowly cannot occupy them; console files and `/healthz` do not take a slot. Per-address, per-device and per-application limits on login, console, enrollment, confirmation and sending are also counted in memory. All of these reset on restart; daily quotas are stored in PostgreSQL and persist. At most 20,000 enrollment and confirmation keys are tracked at once; beyond that new enrollments get 503 `limit_capacity`. Other keys never fail on capacity. Resource rejection returns 429 or 503 with a stable `reason` and `Retry-After`; use exponential backoff and jitter.
 
 ## Webhook alerts
 

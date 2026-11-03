@@ -1,8 +1,10 @@
 -- Schema as of 0.1.3. Every statement is idempotent, so it also completes databases created by any 0.1.x release.
+-- configuration reproduces the 0.1.x schema for upgrade compatibility; 006-drop-legacy.sql drops it again.
 CREATE TABLE IF NOT EXISTS configuration(id INTEGER PRIMARY KEY CHECK(id=1),secret TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS applications(id TEXT PRIMARY KEY,name TEXT NOT NULL,enabled INTEGER NOT NULL,revision TEXT NOT NULL,secret TEXT);
 CREATE TABLE IF NOT EXISTS app_channels(app_id TEXT NOT NULL,kind TEXT NOT NULL,enabled INTEGER NOT NULL,secret TEXT NOT NULL,PRIMARY KEY(app_id,kind));
 CREATE TABLE IF NOT EXISTS registrations(id TEXT PRIMARY KEY,device_id TEXT NOT NULL,server_id TEXT NOT NULL,token TEXT NOT NULL,token_hash TEXT NOT NULL,environment TEXT NOT NULL,nonce TEXT NOT NULL,challenge_hash TEXT,expires BIGINT NOT NULL,delivery_hash TEXT UNIQUE,revoke_hash TEXT UNIQUE,credentials TEXT,last_sent BIGINT NOT NULL DEFAULT 0,app_id TEXT NOT NULL DEFAULT 'perch-mail',channel TEXT NOT NULL DEFAULT 'apns',app_revision TEXT NOT NULL DEFAULT '');
+-- limits reproduces the 0.1.x schema for upgrade compatibility; 006-drop-legacy.sql drops it again.
 CREATE TABLE IF NOT EXISTS limits(key TEXT PRIMARY KEY,start BIGINT NOT NULL,count INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS abuse_settings(id INTEGER PRIMARY KEY CHECK(id=1),settings JSONB NOT NULL);
 CREATE TABLE IF NOT EXISTS abuse_quotas(key TEXT PRIMARY KEY,start BIGINT NOT NULL,expires BIGINT NOT NULL,count INTEGER NOT NULL);
