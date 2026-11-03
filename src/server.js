@@ -12,7 +12,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Applications, defaultApp, validID } from './applications.js';
+import { Applications, appIdOf, validID } from './applications.js';
 import { allows } from './notification.js';
 import { DeliveryQueue } from './delivery.js';
 import { Observability } from './observability.js';
@@ -20,7 +20,7 @@ import { AbuseProtection } from './abuse.js';
 import { RateLimiter } from './rate-limit.js';
 import { ConfigCache } from './config-cache.js';
 import { Scheduler } from './scheduler.js';
-import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
+import { fail, isPlainObject, isToken43, randomSecret, sha256Hex } from './util.js';
 import { match, routeName } from './router.js';
 import { publicRoutes } from './routes/public.js';
 import { securityRoutes } from './routes/security.js';
@@ -43,8 +43,10 @@ function loadConsole() {
   add('/', 'index.html', {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-cache',
+    // No <base> rewriting, no plugins, forms submit only to the gateway, and links out carry no Referer.
     'Content-Security-Policy':
-      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'",
+    'Referrer-Policy': 'no-referrer',
   });
   for (const name of [
     'admin',
@@ -66,6 +68,38 @@ function loadConsole() {
     });
   return files;
 }
+// Answers a GET for a console file, or 304 for an unchanged ETag; false when the request is for something else.
+function serveConsole(files, req, res, path) {
+  const asset = req.method === 'GET' && files.get(path);
+  if (!asset) return false;
+  const headers = { ...asset.headers, ETag: asset.etag, 'X-Content-Type-Options': 'nosniff' };
+  if (req.headers['if-none-match'] === asset.etag) {
+    res.writeHead(304, headers);
+    res.end();
+  } else {
+    res.writeHead(200, headers);
+    res.end(asset.body);
+  }
+  return true;
+}
+// A request body is a JSON object of at most 32 KiB; an empty body is {}.
+async function readBody(req) {
+  let size = 0,
+    body;
+  const chunks = [];
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 32768) fail(413, 'Request too large');
+    chunks.push(chunk);
+  }
+  try {
+    body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
+  } catch {
+    fail(400, 'Invalid JSON');
+  }
+  if (!isPlainObject(body)) fail(400, 'Invalid JSON');
+  return body;
+}
 
 export async function createGateway({
   databaseUrl = process.env.GATEWAY_DATABASE_URL,
@@ -84,9 +118,13 @@ export async function createGateway({
   alertSender,
   databasePoolSize = Number(process.env.GATEWAY_DATABASE_POOL_SIZE || 20),
   deliveryWorkers = Number(process.env.GATEWAY_DELIVERY_WORKERS || 32),
+  legacyWorkers = Number(process.env.GATEWAY_LEGACY_WORKERS || 4),
 } = {}) {
   if (!Number.isInteger(deliveryWorkers) || deliveryWorkers < 1 || deliveryWorkers > 256)
     throw Error('GATEWAY_DELIVERY_WORKERS must be an integer from 1 to 256');
+  // Each synchronous send holds its request open until the provider answers; the cap bounds those requests.
+  if (!Number.isInteger(legacyWorkers) || legacyWorkers < 1 || legacyWorkers > 64)
+    throw Error('GATEWAY_LEGACY_WORKERS must be an integer from 1 to 64');
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const consoleFiles = loadConsole();
   const addressFor = clientAddressResolver(trustedProxies);
@@ -191,6 +229,7 @@ export async function createGateway({
       access,
       autoStart: false,
       concurrency: deliveryWorkers,
+      legacyConcurrency: legacyWorkers,
     });
     monitor = new Observability({ db, now, queue, backups });
     await monitor.initialize();
@@ -248,14 +287,21 @@ export async function createGateway({
     function bearer(req) {
       return req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
     }
-    async function device(req, body) {
-      if (!isToken43(bearer(req))) fail(410, 'Registration expired or revoked');
+    // The registration whose delivery credential is the bearer token, while it and its application configuration
+    // are current; 410 otherwise, so a client re-enrolls.
+    async function credential(req) {
+      const token = bearer(req);
+      if (!isToken43(token)) fail(410, 'Registration expired or revoked');
       const value = await db
         .prepare('SELECT * FROM registrations WHERE delivery_hash=? AND expires>?')
-        .get(sha256Hex(bearer(req)), now());
+        .get(sha256Hex(token), now());
       if (!value || !(await applications.current(value))) fail(410, 'Registration expired or revoked');
+      return value;
+    }
+    async function device(req, body) {
+      const value = await credential(req);
       if (
-        value.app_id !== (body.appId ?? defaultApp) ||
+        value.app_id !== appIdOf(body) ||
         value.device_id !== body.deviceId ||
         value.server_id !== body.serverId ||
         !allows(value, body.kind)
@@ -284,6 +330,7 @@ export async function createGateway({
       seal,
       open,
       bearer,
+      credential,
       device,
     };
     const routes = [
@@ -311,7 +358,8 @@ export async function createGateway({
               (res.statusCode >= 400 && res.statusCode !== 429)
             ) {
               await abuse.log(async () => {
-                const logApp = req.gatewayScope?.appId ?? body?.appId ?? (path.startsWith('/v1/') ? defaultApp : '');
+                const logApp =
+                  req.gatewayScope?.appId ?? (path.startsWith('/v1/') ? appIdOf(body) : (body?.appId ?? ''));
                 await monitor.record({
                   kind: res.statusCode >= 400 ? 'error' : 'request',
                   action: req.method + ' ' + routeName(routes, path),
@@ -333,6 +381,7 @@ export async function createGateway({
           'Content-Type': 'application/json',
           'Cache-Control': 'no-store',
           'X-Content-Type-Options': 'nosniff',
+          'Referrer-Policy': 'no-referrer',
         });
         res.end(JSON.stringify(value));
       };
@@ -340,19 +389,10 @@ export async function createGateway({
         if (shutdown || ownershipLost) return send(503, { error: 'Gateway shutting down' });
         req.clientAddress = addressFor(req);
         req.rateKey = rateKey(req.clientAddress);
-        release = abuse.admit(req.rateKey);
+        abuse.admit(req.rateKey);
         const url = new URL(req.url, 'http://localhost');
         path = url.pathname;
-        const asset = req.method === 'GET' && consoleFiles.get(path);
-        if (asset) {
-          const headers = { ...asset.headers, ETag: asset.etag, 'X-Content-Type-Options': 'nosniff' };
-          if (req.headers['if-none-match'] === asset.etag) {
-            res.writeHead(304, headers);
-            return res.end();
-          }
-          res.writeHead(200, headers);
-          return res.end(asset.body);
-        }
+        if (serveConsole(consoleFiles, req, res, path)) return;
         if (path === '/favicon.ico' && req.method === 'GET') {
           res.writeHead(204);
           return res.end();
@@ -361,9 +401,10 @@ export async function createGateway({
           await db.prepare('SELECT 1').get();
           return send(200, { status: 'ok' });
         }
+        // Counted before the session lookup, so probing /admin/ paths without a session is limited too.
         if (path.startsWith('/admin/')) {
-          await security.authenticate(bearer(req));
           await limit('admin:' + req.rateKey, 600, 60000);
+          await security.authenticate(bearer(req));
         }
         // Monitor routes require the monitor token whatever the method, before the body is read.
         if (routes.some(entry => entry.auth === 'monitor' && entry.regex.test(path))) {
@@ -371,21 +412,9 @@ export async function createGateway({
           if (!timingSafeEqual(Buffer.from(sha256Hex(bearer(req))), Buffer.from(sha256Hex(monitorToken))))
             fail(401, 'Unauthorized');
         }
-        if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
-          let size = 0;
-          const chunks = [];
-          for await (const chunk of req) {
-            size += chunk.length;
-            if (size > 32768) fail(413, 'Request too large');
-            chunks.push(chunk);
-          }
-          try {
-            body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
-          } catch {
-            fail(400, 'Invalid JSON');
-          }
-          if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'Invalid JSON');
-        }
+        if (['POST', 'PUT', 'DELETE'].includes(req.method)) body = await readBody(req);
+        // Only a request whose body has arrived takes a handler slot; see AbuseProtection.slot.
+        release = abuse.slot();
         const found = match(routes, req.method, path);
         if (!found) return send(404, { error: 'Not found' });
         const { route: entry, params } = found;

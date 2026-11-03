@@ -65,6 +65,8 @@ test('alerts default off, redact encrypted settings, deduplicate across restart 
     await f.reject();
     await f.app.alerts.tick();
     assert.equal(f.sent.length, 0);
+    for (const settings of [null, [], { ...alertDefaults, constructor: 1 }])
+      await assert.rejects(f.app.alerts.save({ settings }), e => e.status === 400);
     const state = await f.settings();
     assert.equal(state.configured, true);
     assert.ok(!JSON.stringify(state).includes('private-secret-path'));
@@ -74,6 +76,10 @@ test('alerts default off, redact encrypted settings, deduplicate across restart 
     await f.app.alerts.tick();
     assert.equal(f.sent.length, 1);
     assert.equal(f.sent[0].payload.state, 'firing');
+    // sum() over the BIGINT counter must still reach the webhook as a number, like every other alert value.
+    assert.equal(f.sent[0].payload.kind, 'rejections');
+    assert.equal(typeof f.sent[0].payload.value, 'number');
+    assert.ok(f.sent[0].payload.value >= 1);
     await f.app.alerts.tick();
     await f.restart();
     await f.app.alerts.tick();

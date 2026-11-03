@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Database } from './database.js';
 import { loadEncryption } from './master-key.js';
-import { Backups } from './backups.js';
+import { Backups, pendingJob } from './backups.js';
 import { S3Storage } from './s3-storage.js';
 import { encryptFile } from './backup-crypto.js';
+import { DAY, backoff } from './util.js';
 const exec = promisify(execFile);
 const exists = async path => !!(await stat(path).catch(() => null));
 const permanent = new Set([
@@ -64,6 +65,8 @@ export class BackupWorker {
           const result = await exec('sh', [script], {
             env: {
               ...process.env,
+              // The script dumps the schema this worker serves, whatever the environment says.
+              GATEWAY_DATABASE_SCHEMA: this.db.schema,
               BACKUP_RETENTION_DAYS: String(settings.retentionDays),
               BACKUP_DIR: this.root,
               BACKUP_AGE_RECIPIENT: settings.recipient || '',
@@ -98,12 +101,7 @@ export class BackupWorker {
     if (this.controller.signal.aborted) return;
     const claimed = await this.db.transaction(async () => {
       const row = await this.backups.store.read({ lock: true });
-      if (
-        row.next_at <= this.now() &&
-        !(await this.db
-          .prepare("SELECT 1 FROM backup_jobs WHERE kind='backup' AND state IN ('queued','running','retrying')")
-          .get())
-      ) {
+      if (row.next_at <= this.now() && !(await pendingJob(this.db, 'backup'))) {
         await this.backups.insert(row, 'backup', 'scheduled');
         await this.backups.store.write({ next_at: this.now() + row.settings.intervalHours * 3600000 });
       }
@@ -195,7 +193,7 @@ export class BackupWorker {
         .run(
           retry ? 'retrying' : 'failed',
           retry ? null : this.now(),
-          this.now() + Math.min(3600000, 60000 * 2 ** (job.attempts - 1)),
+          this.now() + backoff(job.attempts),
           reason,
           job.kind === 'test' ? 'none' : job.local_status === 'completed' ? 'completed' : 'failed',
           job.kind === 'test' || row.settings.enabled ? 'failed' : 'disabled',
@@ -207,7 +205,7 @@ export class BackupWorker {
   }
   async prune() {
     const row = await this.backups.row(),
-      cutoff = this.now() - row.settings.retentionDays * 86400000;
+      cutoff = this.now() - row.settings.retentionDays * DAY;
     for (const file of await readdir(resolve(this.root, '.uploads'))) {
       if (!/^[a-f0-9-]{36}\.(age|age\.partial|test)$/.test(file)) continue;
       const path = resolve(this.root, '.uploads', file),
@@ -225,7 +223,8 @@ export class BackupWorker {
   }
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const db = new Database(process.env.GATEWAY_DATABASE_URL, process.env.GATEWAY_DATABASE_SCHEMA || 'relay');
+  // The same default as the gateway (src/server.js), so a bare run without the variable backs up the gateway's schema.
+  const db = new Database(process.env.GATEWAY_DATABASE_URL, process.env.GATEWAY_DATABASE_SCHEMA || 'public');
   let owner,
     worker,
     heartbeat,

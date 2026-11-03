@@ -3,7 +3,7 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { createHmac, randomUUID } from 'node:crypto';
 import { requirePublic } from './net-guard.js';
-import { fail } from './util.js';
+import { fail, DAY, backoff, isPlainObject } from './util.js';
 import { SettingsStore } from './settings-store.js';
 export const alertDefaults = Object.freeze({
   enabled: false,
@@ -111,9 +111,8 @@ export class Alerts {
   async save(body) {
     const s = { ...alertDefaults, ...body.settings };
     if (
-      !body.settings ||
-      typeof body.settings !== 'object' ||
-      Object.keys(body.settings).some(k => !(k in alertDefaults)) ||
+      !isPlainObject(body.settings) ||
+      Object.keys(body.settings).some(k => !Object.hasOwn(alertDefaults, k)) ||
       typeof s.enabled !== 'boolean'
     )
       fail(400, 'Invalid alert settings');
@@ -185,11 +184,14 @@ export class Alerts {
     const row = await this.row();
     await this.db
       .prepare("DELETE FROM alert_notifications WHERE created<? AND state<>'pending'")
-      .run(this.now() - 7 * 86400000);
+      .run(this.now() - 7 * DAY);
     if (!row.settings.enabled || !row.secret) return;
-    // Counters are flushed by the abuse worker. Recent persisted history survives restarts.
+    // Counters are flushed by the abuse worker. Recent persisted history survives restarts. sum() over BIGINT is
+    // numeric, which the driver returns as a string; the cast keeps the alert value a number like the others.
     const rejects = (
-      await this.db.prepare('SELECT coalesce(sum(count),0) n FROM abuse_events WHERE time>=?').get(this.now() - 300000)
+      await this.db
+        .prepare('SELECT coalesce(sum(count),0)::bigint n FROM abuse_events WHERE time>=?')
+        .get(this.now() - 300000)
     ).n;
     const queue = await this.monitor.queueStatus();
     const failures = (
@@ -226,12 +228,7 @@ export class Alerts {
           .prepare(
             "UPDATE alert_notifications SET state=?,attempts=?,next_at=?,error='Webhook delivery failed' WHERE id=? AND state='pending'",
           )
-          .run(
-            attempts >= 6 ? 'failed' : 'pending',
-            attempts,
-            this.now() + Math.min(3600000, 60000 * 2 ** (attempts - 1)),
-            job.id,
-          );
+          .run(attempts >= 6 ? 'failed' : 'pending', attempts, this.now() + backoff(attempts), job.id);
       }
     }
   }

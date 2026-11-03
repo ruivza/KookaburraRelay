@@ -1,15 +1,28 @@
 import { route } from '../router.js';
-import { defaultApp } from '../applications.js';
+import { appIdOf } from '../applications.js';
 import { requestedKinds } from '../notification.js';
 import { channelCatalog } from '../channels.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { confirmReplay } from '../expiry.js';
 import { validateRegistration } from '../access.js';
 import { fail, isToken43, randomSecret, sha256Hex } from '../util.js';
-export function deviceRoutes({ applications, db, queue, now, limit, seal, open, bearer, device, abuse, access }) {
+export function deviceRoutes({
+  applications,
+  db,
+  queue,
+  now,
+  limit,
+  seal,
+  open,
+  bearer,
+  credential,
+  device,
+  abuse,
+  access,
+}) {
   return [
     route('POST', '/v1/registrations', {}, async ({ req, body, send }) => {
-      const appId = body.appId ?? defaultApp;
+      const appId = appIdOf(body);
       const channel = body.channel ?? 'apns';
       const kinds = requestedKinds(body);
       const purpose = body.purpose ?? (kinds.length === 1 ? kinds[0] : 'scoped');
@@ -114,7 +127,7 @@ export function deviceRoutes({ applications, db, queue, now, limit, seal, open, 
       '/v1/registrations/:id/confirm',
       { limit: ['confirm-ip', 120, 3600000] },
       async ({ req, body, params, send }) => {
-        const appId = body.appId ?? defaultApp;
+        const appId = appIdOf(body);
         const value = await db.transaction(async () => {
           // Application row first, as configuration changes lock it; the registration row keeps concurrent
           // confirmations of one registration from both minting credentials.
@@ -231,11 +244,7 @@ export function deviceRoutes({ applications, db, queue, now, limit, seal, open, 
       }),
     ),
     route('GET', '/v1/jobs/:id', { auth: 'device' }, async ({ req, params, send }) => {
-      if (!isToken43(bearer(req))) fail(410, 'Registration expired or revoked');
-      const entry = await db
-        .prepare('SELECT * FROM registrations WHERE delivery_hash=? AND expires>?')
-        .get(sha256Hex(bearer(req)), now());
-      if (!entry || !(await applications.current(entry))) fail(410, 'Registration expired or revoked');
+      const entry = await credential(req);
       await access.delivery(req, entry);
       const job = await queue.get(params.id);
       if (!job || job.registration_id !== entry.id) fail(404, 'Task not found');

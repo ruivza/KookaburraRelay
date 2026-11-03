@@ -2,9 +2,9 @@ import { createHash, X509Certificate, createPrivateKey } from 'node:crypto';
 import { verifyAttestation, verifyAssertion } from 'node-app-attest';
 import cbor from 'cbor';
 import { GoogleOAuth, boundedFetch } from './google-oauth.js';
-const invalid = () => {
-  throw Object.assign(Error('Invalid application proof'), { status: 403 });
-};
+import { fail } from './util.js';
+const invalid = () => fail(403, 'Invalid application proof');
+// Carries retryAfter, which fail() does not set.
 const unavailable = () => {
   throw Object.assign(Error('Application verification temporarily unavailable'), { status: 503, retryAfter: 60 });
 };
@@ -66,13 +66,13 @@ export function googleCredential(value) {
     typeof value.client_email !== 'string' ||
     !/^[^\s@]+@[^\s@]+\.gserviceaccount\.com$/.test(value.client_email)
   )
-    throw Object.assign(Error('Invalid Google service account'), { status: 400 });
+    fail(400, 'Invalid Google service account');
   try {
     const key = createPrivateKey(value.private_key);
     if (key.asymmetricKeyType !== 'rsa' || key.asymmetricKeyDetails.modulusLength < 2048) throw Error();
     return { clientEmail: value.client_email, privateKey: key.export({ type: 'pkcs8', format: 'pem' }) };
   } catch {
-    throw Object.assign(Error('Invalid Google service account'), { status: 400 });
+    fail(400, 'Invalid Google service account');
   }
 }
 export function validateGoogleVerdict(verdict, { policy, payload, now = Date.now() }) {

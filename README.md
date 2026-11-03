@@ -37,7 +37,7 @@ Requires Node.js 24+ and PostgreSQL; Compose and CI use PostgreSQL 18.
 ```sh
 npm ci
 export GATEWAY_DATABASE_URL='postgresql://relay:replace-me@127.0.0.1:5432/relay'
-export GATEWAY_DATABASE_SCHEMA=relay
+export GATEWAY_DATABASE_SCHEMA=relay   # the backup worker must use the same value
 npm start
 ```
 

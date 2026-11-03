@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { connect } from 'node:net';
 import { createGateway } from './helpers.mjs';
 import { AbuseProtection } from '../src/abuse.js';
 
@@ -275,8 +276,11 @@ for (const change of ['revocation', 'access policy'])
           200,
         );
       } else {
+        // A real change: saving the stored settings unchanged keeps the policy revision and its registrations.
         const policy = await f.app.access.describe(stale.app_id);
-        await f.app.access.savePolicy(stale.app_id, { settings: policy.settings });
+        await f.app.access.savePolicy(stale.app_id, {
+          settings: { ...policy.settings, appleEnvironment: 'development' },
+        });
       }
       await assert.rejects(
         f.app.queue.enqueue(stale, { requestId: 'stale-request-0001' }),
@@ -311,16 +315,53 @@ test('memory admission and logging remain bounded under changing keys and slow w
   releases.forEach(r => r());
   await Promise.all(work);
   assert.equal(abuse.logWrites, 0);
-  const slots = Array.from({ length: 64 }, (_, i) => abuse.admit('ip-' + i));
+  // Rate admission alone takes no handler slot; slots are separate and bounded.
+  abuse.admit('ip-0');
+  assert.equal(abuse.state().activeRequests, 0);
+  const slots = Array.from({ length: 64 }, () => abuse.slot());
+  assert.equal(abuse.state().activeRequests, 64);
   assert.throws(
-    () => abuse.admit('another'),
-    e => e.reason === 'request_concurrency',
+    () => abuse.slot(),
+    e => e.reason === 'request_concurrency' && e.status === 503,
   );
   slots.forEach(release => {
     release();
     release();
   });
   assert.equal(abuse.requests, 0);
+});
+
+test('a request whose body is still arriving holds no handler slot', async t => {
+  const f = await fixture();
+  const sockets = [];
+  try {
+    t.mock.method(console, 'error', () => {});
+    const port = f.app.server.address().port;
+    // More slow uploads than there are slots: each sends its headers and only part of the body it announced.
+    for (let n = 0; n < 70; n++) {
+      const socket = connect(port, '127.0.0.1');
+      socket.on('error', () => {});
+      socket.write(
+        'POST /v1/jobs HTTP/1.1\r\nHost: relay\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n' +
+          'X-Forwarded-For: 198.51.100.' +
+          n +
+          '\r\n\r\n{"appId":',
+      );
+      sockets.push(socket);
+    }
+    // Every one has been counted by rate admission, so each handler is waiting on its body.
+    for (let tries = 0; f.app.abuse.limiter.count('http:global') < 70; tries++) {
+      assert.ok(tries < 500, 'pending requests did not reach the gateway');
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(f.app.abuse.state().activeRequests, 0);
+    assert.equal((await f.call('/v1/status')).status, 200);
+    assert.equal((await f.call('/auth/login', { token: 'wrong' })).status, 401);
+    assert.equal(f.app.abuse.state().activeRequests, 0);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await f.close();
+  }
 });
 
 test('confirmation replays return the grant only for ten minutes, then the stored plaintext grant is erased', async () => {
@@ -429,7 +470,7 @@ test('a source exhausting its own request budget neither consumes nor blocks the
   let limited = 0;
   for (let n = 0; n < 6100; n++) {
     try {
-      abuse.admit('198.51.100.1')();
+      abuse.admit('198.51.100.1');
     } catch (error) {
       assert.equal(error.reason, 'request_source');
       limited++;
@@ -437,13 +478,13 @@ test('a source exhausting its own request budget neither consumes nor blocks the
   }
   assert.equal(limited, 5500);
   assert.equal(abuse.limiter.count('http:global'), 600);
-  abuse.admit('198.51.100.2')();
+  abuse.admit('198.51.100.2');
   let admitted = 601,
     reason;
   for (let n = 3; !reason; n++)
     for (let i = 0; i < 600 && !reason; i++) {
       try {
-        abuse.admit('198.51.100.' + n)();
+        abuse.admit('198.51.100.' + n);
         admitted++;
       } catch (error) {
         reason = error.reason;

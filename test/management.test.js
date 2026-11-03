@@ -259,6 +259,23 @@ test('monitoring persists external outages, protects report scope, validates inp
     for (let i = 0; i < 35; i++) await f.app.monitor.record({ kind: 'audit', action: 'test' });
     assert.equal((await f.call('/admin/logs?kind=audit')).body.items.length, 30);
     assert.equal((await f.call('/admin/logs?kind=audit&page=2')).body.items.length, 5);
+    // Malformed filters are refused before they reach PostgreSQL; status is an INTEGER column.
+    for (const path of [
+      '/admin/logs?status=abc',
+      '/admin/logs?status=99',
+      '/admin/logs?status=600',
+      '/admin/logs?status=2e2',
+      '/admin/logs?kind=audit%20OR%201',
+      '/admin/jobs?state=' + 'a'.repeat(101),
+      '/admin/devices?appId=perch%27mail',
+    ]) {
+      const refused = await f.call(path);
+      assert.equal(refused.status, 400, path);
+      assert.equal(refused.body.error, 'Invalid filter', path);
+    }
+    const ok = await f.call('/admin/logs?status=200&kind=audit&channel=apns&appId=perch-mail.v2');
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.total, 0);
   } finally {
     await f.close();
   }
@@ -396,5 +413,32 @@ test('failed legacy admission releases its reservation and shutdown waits for ad
     await closing;
   } finally {
     await f.close();
+  }
+});
+
+test('synchronous send slots follow GATEWAY_LEGACY_WORKERS, an integer from 1 to 64', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'perch-legacy-workers-'));
+  try {
+    for (const legacyWorkers of [0, 65, 2.5, NaN])
+      await assert.rejects(
+        createGateway({ dataDir, adminToken: admin, autoStart: false, legacyWorkers }),
+        /GATEWAY_LEGACY_WORKERS must be an integer from 1 to 64/,
+      );
+    const app = await createGateway({ dataDir, adminToken: admin, autoStart: false, legacyWorkers: 2 });
+    try {
+      assert.equal(app.queue.legacyConcurrency, 2);
+      const slots = [app.queue.reserve(true), app.queue.reserve(true)];
+      assert.throws(
+        () => app.queue.reserve(true),
+        error => error.status === 503,
+      );
+      // Background workers keep their own slots.
+      app.queue.reserve().release();
+      for (const slot of slots) slot.release();
+    } finally {
+      await app.close();
+    }
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
   }
 });

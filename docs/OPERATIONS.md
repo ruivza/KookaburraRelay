@@ -18,13 +18,14 @@ GHCR alternatives: `ghcr.io/ruivza/kookaburrarelay:0.3.0` and `ghcr.io/ruivza/ko
 | Variable | Purpose |
 | --- | --- |
 | `GATEWAY_DATABASE_URL` | Required PostgreSQL connection string for direct Node execution |
-| `GATEWAY_DATABASE_SCHEMA` | Schema; defaults to `public`, Compose uses `relay` |
+| `GATEWAY_DATABASE_SCHEMA` | Schema; defaults to `public` for the gateway, the backup worker and `ops/backup-once.sh`; Compose uses `relay` |
 | `GATEWAY_HOST`, `GATEWAY_PORT` | Node listen address and port; defaults to `127.0.0.1:3220` |
 | `GATEWAY_DATA_DIR` | Master key and initial admin / monitor tokens; defaults to repository-root `data/` |
 | `GATEWAY_ADMIN_TOKEN` | Optional initial administrator token, at least 32 characters |
 | `GATEWAY_TRUSTED_PROXIES` | Comma-separated verified proxy IP addresses / CIDRs |
 | `GATEWAY_DATABASE_POOL_SIZE` | PostgreSQL connections for requests and delivery; default 20, from 2 to 200. The ownership lock and cleanup use their own connections |
-| `GATEWAY_DELIVERY_WORKERS` | Concurrent background deliveries; default 32, from 1 to 256. Legacy synchronous sends have 4 separate slots |
+| `GATEWAY_DELIVERY_WORKERS` | Concurrent background deliveries; default 32, from 1 to 256. Legacy synchronous sends have separate slots |
+| `GATEWAY_LEGACY_WORKERS` | Concurrent synchronous `POST /v1/notify` sends, each holding its request open until the provider answers; default 4, from 1 to 64. A send without a free slot gets 503 |
 | `POSTGRES_PASSWORD` | Required Compose database superuser password |
 | `GATEWAY_DB_USER`, `GATEWAY_DB_PASSWORD` | Compose non-superuser role for the gateway and backup worker; see [database roles](#database-roles) |
 | `GATEWAY_BIND` | Compose host bind address; defaults to `127.0.0.1` |
@@ -77,7 +78,7 @@ Application disablement and channel credential or enablement changes revoke that
 
 - Deduplication is scoped to registration + `requestId` while the job record exists; default retention is 30 days and is configurable.
 - Each registration allows one unfinished job and a minimum 60-second interval between new jobs.
-- At most 10,000 unfinished jobs and four shared sending slots are allowed. Synchronous requests without a slot return 503 before enqueueing.
+- At most 10,000 unfinished jobs are allowed. Synchronous requests share `GATEWAY_LEGACY_WORKERS` sending slots (default four); one without a slot returns 503 before enqueueing.
 - Explicit temporary failures retry with jitter and bounded `Retry-After`, starting at 60 seconds, up to six attempts and a 24-hour deadline.
 - Permanent invalid-device errors revoke the registration. Authentication and parameter failures do not retry.
 - Connection failures, timeouts, and interrupted sends may already have reached the provider: state is `unknown` and work is not automatically replayed.
@@ -104,7 +105,7 @@ Retention settings default to daily cleanup: request logs 14 days, error logs 30
 
 ## Backup and recovery
 
-Compose starts a backup worker that immediately creates a local archive and normally repeats daily, retaining about 14 days. Later schedule changes use the console. Archives contain a consistent PostgreSQL `relay` snapshot, matching `master.key`, `admin.token` (empty when the first token came from `GATEWAY_ADMIN_TOKEN`), `monitor.token`, `.env`, metadata, and SHA-256 checksums.
+Compose starts a backup worker that immediately creates a local archive and normally repeats daily, retaining about 14 days. Later schedule changes use the console. Archives contain a consistent snapshot of the gateway's PostgreSQL schema (`GATEWAY_DATABASE_SCHEMA`: `public` by default, `relay` under Compose), matching `master.key`, `admin.token` (empty when the first token came from `GATEWAY_ADMIN_TOKEN`), `monitor.token`, `.env`, metadata, and SHA-256 checksums.
 
 When the backup settings hold an `age` public key, each local bundle is written as `relay-*.tar.age`, encrypted to that key, and no plaintext archive is kept; remote uploads reuse that file instead of encrypting again. Without a key, bundles stay plaintext `relay-*.tar` files containing unencrypted secrets, and the worker logs a warning for each one. Retention removes both formats. Protect the directory either way.
 
@@ -123,7 +124,7 @@ sh ops/verify-backup.sh /absolute/path/relay-backup.tar
 sh ops/verify-backup.sh -i /secure/backup-identity.txt /absolute/path/relay-backup.tar.age
 ```
 
-The script checks archive members and checksums, restores a temporary database, and verifies the master-key binding and application decryption. It requires running PostgreSQL and gateway containers. Actual recovery uses a separate deployment with the matching database, key, and configuration; validate it before directing traffic there. A new key cannot decrypt an old database.
+The script checks archive members and checksums, restores the schema recorded in the bundle's metadata into a temporary database, and verifies the master-key binding and application decryption. It requires running PostgreSQL and gateway containers. Actual recovery uses a separate deployment with the matching database, key, and configuration; validate it before directing traffic there. A new key cannot decrypt an old database.
 
 Remote backups are disabled by default. The console supports B2, R2, AWS S3, and compatible HTTPS S3 endpoints using long-lived access keys. Create an `age` key pair offline, store the private identity securely, and give the gateway only its public recipient. Remote archives are `.tar.age`, byte for byte the encrypted local bundle; losing the private identity prevents decryption.
 

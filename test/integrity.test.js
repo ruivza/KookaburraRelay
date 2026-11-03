@@ -136,7 +136,7 @@ function googleFixture(fetcher) {
   };
 }
 
-test('Google OAuth caches one credential, shares concurrent refreshes and refreshes before expiry', async () => {
+test('Google OAuth caches per credential, shares concurrent refreshes and refreshes before expiry', async () => {
   let oauth = 0,
     decoded = 0,
     begin,
@@ -222,7 +222,7 @@ test('Google OAuth responses without a trustworthy lifetime are never cached', a
   }
 });
 
-test('a delayed old credential refresh cannot replace the latest credential cache', async () => {
+test('applications sharing a verifier keep their own tokens, even when one refresh finishes late', async () => {
   let oauth = 0,
     begin,
     finish;
@@ -252,11 +252,14 @@ test('a delayed old credential refresh cannot replace the latest credential cach
     finish();
   }
   await old;
+  // Alternating between the two credentials reuses both cached tokens.
   await f.verify(current);
+  await f.verify();
   assert.equal(oauth, 2);
   assert.deepEqual(decoded, [
     'Bearer test-token-' + current.clientEmail,
     'Bearer test-token-' + f.credential.clientEmail,
     'Bearer test-token-' + current.clientEmail,
+    'Bearer test-token-' + f.credential.clientEmail,
   ]);
 });

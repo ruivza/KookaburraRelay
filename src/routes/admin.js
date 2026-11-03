@@ -7,14 +7,19 @@ function pagination(query) {
   if (!Number.isSafeInteger(page) || page < 1 || page > 100000) fail(400, 'Invalid page');
   return { page, limit: 30, offset: (page - 1) * 30 };
 }
+// Filter values are checked before they reach a query: status is an INTEGER column, where an arbitrary string would
+// be a PostgreSQL type error (500) rather than a 400. Status codes are 100 to 599.
+const validFilter = (key, value) => (key === 'status' ? /^[1-5]\d\d$/ : /^[A-Za-z0-9_.-]{1,100}$/).test(value);
 async function listing(db, table, query, columns, timeColumn, select = '*') {
   const { page, limit, offset } = pagination(query),
     clauses = [],
     values = [];
   for (const [key, column] of Object.entries(columns)) {
-    if (query.get(key)) {
+    const value = query.get(key);
+    if (value) {
+      if (!validFilter(key, value)) fail(400, 'Invalid filter');
       clauses.push(column + '=?');
-      values.push(query.get(key));
+      values.push(value);
     }
   }
   for (const [key, op] of [

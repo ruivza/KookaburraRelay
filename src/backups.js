@@ -14,6 +14,12 @@ export const backupDefaults = {
   intervalHours: 24,
   retentionDays: 14,
 };
+// Whether a job of this kind other than `except` is queued, running or retrying: each kind runs one at a time.
+export async function pendingJob(db, kind, except = '') {
+  return !!(await db
+    .prepare("SELECT 1 FROM backup_jobs WHERE state IN ('queued','running','retrying') AND kind=? AND id<>?")
+    .get(kind, except));
+}
 export class Backups {
   constructor({ db, seal, open, security, now = Date.now, validateKey = validateRecipient }) {
     Object.assign(this, { db, seal, open, security, now, validateKey });
@@ -42,48 +48,44 @@ export class Backups {
     const row = await this.store.read();
     return row ? { ...row, settings: storageSettings(row.settings) } : row;
   }
+  // Worker liveness and the last local and remote backups, which status() and summary() both report. Only backup
+  // jobs ever complete locally; remote successes count for the current target only.
+  async health(row, time) {
+    const r = await this.db
+      .prepare(
+        `SELECT (SELECT heartbeat FROM backup_worker WHERE id=1) heartbeat,
+      (SELECT max(local_completed) FROM backup_jobs WHERE kind='backup' AND local_status='completed') last_local,
+      (SELECT max(finished) FROM backup_jobs WHERE kind='backup' AND remote_status='completed' AND config_revision=?) last_remote`,
+      )
+      .get(row.settings.revision);
+    return {
+      workerOnline: r.heartbeat !== null && r.heartbeat > time - 120000,
+      lastLocalSuccess: r.last_local,
+      lastRemoteSuccess: r.last_remote,
+    };
+  }
   async status() {
     const row = await this.row(),
-      worker = await this.db.prepare('SELECT heartbeat FROM backup_worker WHERE id=1').get();
+      { workerOnline, lastLocalSuccess, lastRemoteSuccess } = await this.health(row, this.now());
     return {
       settings: { ...row.settings, hasApplicationKey: !!row.secret },
       nextAt: row.next_at,
-      workerOnline: !!worker && worker.heartbeat > this.now() - 120000,
+      workerOnline,
       twoFactorEnabled: (await this.security.status()).twoFactorEnabled,
       remoteCheck: await this.db
         .prepare(
           "SELECT remote_status,COALESCE(finished,created) AS finished FROM backup_jobs WHERE config_revision=? AND remote_status IN ('completed','failed') ORDER BY COALESCE(finished,created) DESC,id DESC LIMIT 1",
         )
         .get(row.settings.revision),
-      lastLocalSuccess: (
-        await this.db.prepare("SELECT max(local_completed) time FROM backup_jobs WHERE local_status='completed'").get()
-      ).time,
-      lastRemoteSuccess: (
-        await this.db
-          .prepare(
-            "SELECT max(finished) time FROM backup_jobs WHERE remote_status='completed' AND kind='backup' AND config_revision=?",
-          )
-          .get(row.settings.revision)
-      ).time,
+      lastLocalSuccess,
+      lastRemoteSuccess,
       jobs: await this.db.prepare('SELECT * FROM backup_jobs ORDER BY created DESC,id DESC LIMIT 30').all(),
     };
   }
   async summary() {
     const row = await this.row(),
       time = this.now();
-    const worker = await this.db.prepare('SELECT heartbeat FROM backup_worker WHERE id=1').get();
-    const local = (
-      await this.db
-        .prepare("SELECT max(local_completed) time FROM backup_jobs WHERE kind='backup' AND local_status='completed'")
-        .get()
-    ).time;
-    const remote = (
-      await this.db
-        .prepare(
-          "SELECT max(finished) time FROM backup_jobs WHERE kind='backup' AND remote_status='completed' AND config_revision=?",
-        )
-        .get(row.settings.revision)
-    ).time;
+    const { workerOnline, lastLocalSuccess: local, lastRemoteSuccess: remote } = await this.health(row, time);
     const latest = await this.db
       .prepare(
         "SELECT state,error,local_status,remote_status FROM backup_jobs WHERE kind='backup' AND config_revision=? ORDER BY created DESC,id DESC LIMIT 1",
@@ -98,7 +100,7 @@ export class Backups {
             ? 'overdue'
             : 'ok';
     return {
-      workerOnline: !!worker && worker.heartbeat > time - 120000,
+      workerOnline,
       intervalHours: row.settings.intervalHours,
       local: { lastSuccess: local, status: status(local, latest?.local_status === 'failed') },
       remote: {
@@ -181,12 +183,7 @@ export class Backups {
         validateTarget(row.settings);
         if (!row.secret || !row.settings.recipient) fail(400, 'Save storage credentials and public key first');
       }
-      if (
-        await this.db
-          .prepare("SELECT 1 FROM backup_jobs WHERE state IN ('queued','running','retrying') AND kind=?")
-          .get(kind)
-      )
-        fail(409, 'A backup operation is already pending');
+      if (await pendingJob(this.db, kind)) fail(409, 'A backup operation is already pending');
       return this.insert(row, kind, source);
     });
   }
@@ -213,12 +210,7 @@ export class Backups {
       const job = await this.db.prepare('SELECT * FROM backup_jobs WHERE id=? FOR UPDATE').get(id);
       if (!job || !['failed', 'retrying'].includes(job.state)) fail(409, 'This backup cannot be retried');
       if (job.config_revision !== row.settings.revision) fail(409, 'Backup target changed; create a new backup');
-      if (
-        await this.db
-          .prepare("SELECT 1 FROM backup_jobs WHERE state IN ('queued','running','retrying') AND id<>? AND kind=?")
-          .get(id, job.kind)
-      )
-        fail(409, 'A backup operation is already pending');
+      if (await pendingJob(this.db, job.kind, id)) fail(409, 'A backup operation is already pending');
       await this.db
         .prepare("UPDATE backup_jobs SET state='queued',attempts=0,next_at=?,finished=NULL,error='' WHERE id=?")
         .run(this.now(), id);

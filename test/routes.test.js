@@ -59,4 +59,36 @@ test('every admin route requires a console session, and the route table has no d
     });
     assert.equal(response.status, 401, entry.method + ' ' + path);
   }
+  // Requests without a session count against the admin limit before the session lookup.
+  const general = app.rateLimits.general;
+  assert.equal(general.count('admin:127.0.0.1'), admin.length);
+  while (general.count('admin:127.0.0.1') < 600) general.take('admin:127.0.0.1', 600, 60000);
+  const limited = await fetch(base + '/admin/apps');
+  assert.equal(limited.status, 429);
+  assert.equal((await limited.json()).reason, 'source_or_device');
+});
+
+test('the console page forbids framing, plugins, base rewriting, foreign form targets and referrers', async t => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'relay-console-headers-'));
+  const app = await createGateway({ dataDir, adminToken: 'console-header-operator'.repeat(2), autoStart: false });
+  t.after(async () => {
+    await app.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  const base = 'http://127.0.0.1:' + app.server.address().port;
+  const page = await fetch(base + '/');
+  assert.equal(page.status, 200);
+  const policy = page.headers.get('content-security-policy').split(/;\s*/);
+  for (const directive of [
+    "default-src 'self'",
+    "script-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    "form-action 'self'",
+  ])
+    assert.ok(policy.includes(directive), directive);
+  assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
+  assert.equal((await fetch(base + '/v1/status')).headers.get('referrer-policy'), 'no-referrer');
 });

@@ -10,6 +10,9 @@ const credential = {
   privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }),
 };
 const other = { ...credential, clientEmail: 'b@project.iam.gserviceaccount.com' };
+// The service account a token request was signed for.
+const issuer = options =>
+  JSON.parse(Buffer.from(new URLSearchParams(options.body).get('assertion').split('.')[1], 'base64url')).iss;
 const gate = () => {
   let open;
   const shut = new Promise(r => (open = r));
@@ -58,22 +61,20 @@ test('Google OAuth signs a scoped assertion for the fixed endpoint and caches fr
   assert.equal(f.calls.length, 2);
 });
 
-test('Google OAuth shares one refresh per credential and a superseded refresh never replaces the cache', async () => {
+test('Google OAuth shares one refresh per credential while other credentials refresh and cache independently', async () => {
   const held = gate(),
     f = client(async (n, options) => {
-      const { iss } = JSON.parse(
-        Buffer.from(new URLSearchParams(options.body).get('assertion').split('.')[1], 'base64url'),
-      );
       if (n === 1) await held.shut;
-      return Response.json({ access_token: iss + '-' + n, expires_in: 3600 });
+      return Response.json({ access_token: issuer(options) + '-' + n, expires_in: 3600 });
     });
   const first = [f.oauth.token(credential), f.oauth.token(credential)];
   assert.equal(await f.oauth.token(other), other.clientEmail + '-2');
   held.open();
   assert.deepEqual(await Promise.all(first), [credential.clientEmail + '-1', credential.clientEmail + '-1']);
+  // The slower refresh is cached for its own credential and leaves the other one's token in place.
+  assert.equal(await f.oauth.token(credential), credential.clientEmail + '-1');
   assert.equal(await f.oauth.token(other), other.clientEmail + '-2');
   assert.equal(f.calls.length, 2);
-  assert.equal(await f.oauth.token(credential), credential.clientEmail + '-3');
   // A rotated key under the same email is a different credential.
   assert.equal(
     await f.oauth.token({
@@ -83,8 +84,35 @@ test('Google OAuth shares one refresh per credential and a superseded refresh ne
         format: 'pem',
       }),
     }),
-    credential.clientEmail + '-4',
+    credential.clientEmail + '-3',
   );
+});
+
+test('Google OAuth fetches once per credential when credentials alternate, and invalidate(token) forgets only its own', async () => {
+  const f = client((n, options) => Response.json({ access_token: issuer(options) + '-' + n, expires_in: 3600 }));
+  for (let round = 0; round < 3; round++) {
+    assert.equal(await f.oauth.token(credential), credential.clientEmail + '-1');
+    assert.equal(await f.oauth.token(other), other.clientEmail + '-2');
+  }
+  assert.equal(f.calls.length, 2);
+  f.oauth.invalidate(credential.clientEmail + '-1');
+  assert.equal(await f.oauth.token(other), other.clientEmail + '-2');
+  assert.equal(await f.oauth.token(credential), credential.clientEmail + '-3');
+  assert.equal(f.calls.length, 3);
+});
+
+test('Google OAuth keeps at most 32 credentials, dropping the oldest stored first', async () => {
+  const f = client((n, options) => Response.json({ access_token: issuer(options) + '-' + n, expires_in: 3600 }));
+  const many = Array.from({ length: 33 }, (_, i) => ({
+    ...credential,
+    clientEmail: 'account-' + i + '@project.iam.gserviceaccount.com',
+  }));
+  for (const account of [...many.slice(0, 32), ...many.slice(0, 32)]) await f.oauth.token(account);
+  assert.equal(f.calls.length, 32);
+  await f.oauth.token(many[32]);
+  assert.equal(f.oauth.cached.size, 32);
+  assert.equal(await f.oauth.token(many[1]), many[1].clientEmail + '-2');
+  assert.equal(await f.oauth.token(many[0]), many[0].clientEmail + '-34');
 });
 
 test('Google OAuth invalidation drops only the rejected token; invalidate() and close() discard refreshes in flight', async () => {

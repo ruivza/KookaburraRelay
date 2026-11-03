@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-const DAY = 86400000;
+import { fail, DAY } from './util.js';
 export class Observability {
   constructor({ db, now = Date.now, queue, backups }) {
     Object.assign(this, { db, now, queue, backups });
@@ -118,9 +118,9 @@ export class Observability {
     const db = this.db;
     const counts = await db
       .prepare(
-        `SELECT count(*) total,coalesce(sum(CASE WHEN state='accepted' THEN 1 ELSE 0 END),0) accepted,
-      coalesce(sum(CASE WHEN state IN ('failed','unknown') THEN 1 ELSE 0 END),0) failed,coalesce(sum(CASE WHEN state IN ('queued','retrying') THEN 1 ELSE 0 END),0) queued,
-      coalesce(sum(CASE WHEN state='sending' THEN 1 ELSE 0 END),0) sending FROM delivery_jobs WHERE created>=?`,
+        `SELECT count(*) total,count(*) FILTER (WHERE state='accepted') accepted,
+      count(*) FILTER (WHERE state IN ('failed','unknown')) failed,count(*) FILTER (WHERE state IN ('queued','retrying')) queued,
+      count(*) FILTER (WHERE state='sending') sending FROM delivery_jobs WHERE created>=?`,
       )
       .get(this.now() - DAY);
     return {
@@ -148,11 +148,8 @@ export class Observability {
     };
   }
   async report(body) {
-    const fail = () => {
-      throw Object.assign(Error('Invalid probe report'), { status: 400 });
-    };
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(body.monitor || '') || !Array.isArray(body.samples) || body.samples.length > 100)
-      fail();
+      fail(400, 'Invalid probe report');
     for (const s of body.samples)
       if (
         !Number.isSafeInteger(s.time) ||
@@ -163,7 +160,7 @@ export class Observability {
         s.latency < 0 ||
         s.latency > 60000
       )
-        fail();
+        fail(400, 'Invalid probe report');
     await this.db.transaction(async () => {
       for (const s of body.samples)
         await this.db

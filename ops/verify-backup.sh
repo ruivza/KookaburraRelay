@@ -36,11 +36,17 @@ esac
 if tar -tvf "$archive" | cut -c1 | tr -d '\n' | tr -d '-' | grep -q .; then echo 'Archive must contain regular files only' >&2; exit 1; fi
 tar -xf "$archive" -C "$stage"
 (cd "$stage" && if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi)
+# The dump holds the schema named in the bundle metadata (GATEWAY_DATABASE_SCHEMA when it was taken: public by
+# default, relay under Compose); the restored gateway must open that schema.
+schema=$(sed -n 's/^schema=//p' "$stage/metadata")
+case "$schema" in ''|[!a-z_]*|*[!a-z0-9_]*) echo 'Bundle metadata names no valid schema' >&2; exit 1;; esac
 # Restore as the gateway's own database role so the check below runs with the
-# privileges the gateway really has; only createdb and dropdb need the superuser.
+# privileges the gateway really has; only database setup and cleanup use the superuser.
 app_user=$(docker compose exec -T gateway node -p 'decodeURIComponent(new URL(process.env.GATEWAY_DATABASE_URL).username)')
 docker compose exec -T postgres createdb -U kookaburra -O "$app_user" "$restore_db"
 created=true
+# A dump of schema public recreates it, so the empty one every new database starts with must go first.
+if [ "$schema" = public ]; then docker compose exec -T postgres psql -X -q -v ON_ERROR_STOP=1 -U kookaburra -d "$restore_db" -c 'DROP SCHEMA public'; fi
 docker compose exec -T postgres pg_restore -U kookaburra --role="$app_user" --exit-on-error --no-owner --no-privileges -d "$restore_db" < "$stage/database.dump"
 docker compose exec -T gateway node --input-type=module -e '
 import {mkdtempSync,readFileSync,writeFileSync,rmSync} from "node:fs";
@@ -50,9 +56,9 @@ const url=new URL(process.env.GATEWAY_DATABASE_URL);url.pathname="/"+process.arg
 let app;
 try {
  writeFileSync(dataDir+"/master.key",readFileSync(0),{mode:0o600});
- app=await createGateway({databaseUrl:url.toString(),databaseSchema:"relay",dataDir,autoStart:false});
+ app=await createGateway({databaseUrl:url.toString(),databaseSchema:process.argv[2],dataDir,autoStart:false});
  await app.applications.list();
  await app.applications.channels.verify();
  console.log("Restore verified: PostgreSQL dump, master-key binding and application decryption");
 } finally {await app?.close();rmSync(dataDir,{recursive:true,force:true});}
-' "$restore_db" < "$stage/master.key"
+' "$restore_db" "$schema" < "$stage/master.key"

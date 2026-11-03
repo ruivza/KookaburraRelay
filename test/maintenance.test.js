@@ -22,14 +22,42 @@ test('cleanup previews, protects pending work, consumes confirmation and persist
           'INSERT INTO delivery_jobs(id,registration_id,app_id,channel,device_id,mode,state,created,updated,next_at,expires) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
         )
         .run(state, 'reg', 'perch-mail', 'apns', 'device', 'sync', state, old, old, now, now + 10000);
+    await db
+      .prepare(
+        "INSERT INTO registrations(id,device_id,server_id,token,token_hash,environment,nonce,expires) VALUES('reg','device','server','token','hash','production','nonce',?)",
+      )
+      .run(old);
     await db.prepare('INSERT INTO admin_sessions VALUES(?,?)').run('expired', old);
     await db.prepare('INSERT INTO admin_sessions VALUES(?,?)').run('valid', now + 100000);
     const p = await m.preview({ types: ['requests', 'errors', 'audit', 'jobs', 'expired'] });
     assert.equal(p.counts.jobs, 1);
     assert.equal((await db.prepare('SELECT count(*) n FROM delivery_jobs').get()).n, 4);
     await m.manual(p.previewId);
-    await m.work;
+    // Batches, the expiry transaction and bookkeeping run on cleanup's dedicated connection, not the request pool.
+    const pool = db.pool,
+      { query, connect } = pool,
+      pooled = [];
+    pool.query = (...args) => {
+      pooled.push(args[0]);
+      return query.apply(pool, args);
+    };
+    pool.connect = (...args) => {
+      pooled.push('connect');
+      return connect.apply(pool, args);
+    };
+    try {
+      await m.work;
+    } finally {
+      delete pool.query;
+      delete pool.connect;
+    }
+    assert.deepEqual(pooled, []);
     assert.equal((await db.prepare('SELECT count(*) n FROM delivery_jobs').get()).n, 3);
+    assert.equal((await db.prepare('SELECT count(*) n FROM registrations').get()).n, 0);
+    assert.equal(
+      (await db.prepare("SELECT reason FROM delivery_jobs WHERE id='queued'").get()).reason,
+      'RegistrationExpired',
+    );
     assert.ok(await db.prepare('SELECT * FROM admin_sessions WHERE hash=?').get('valid'));
     assert.equal((await m.state()).runs[0].status, 'completed');
     await assert.rejects(m.manual(p.previewId), /preview expired/);

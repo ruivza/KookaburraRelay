@@ -69,15 +69,21 @@ async function scriptEnvironment(dir) {
   await writeFile(data + '/admin.token', 'rotated-admin-token-marker');
   await writeFile(data + '/monitor.token', 'fixture-monitor-token');
   await writeFile(config, 'POSTGRES_PASSWORD=fixture\n');
+  // The stand-in records its arguments next to itself, so tests can check which schema was dumped.
   await writeFile(
     bin + '/pg_dump',
-    '#!/bin/sh\nfor arg; do case "$arg" in --file=*) printf "fixture database dump\\n" > "${arg#--file=}";; esac; done\n',
+    '#!/bin/sh\nfor arg; do echo "$arg"; done > "$0.args"\nfor arg; do case "$arg" in --file=*) printf "fixture database dump\\n" > "${arg#--file=}";; esac; done\n',
     { mode: 0o755 },
   );
   await writeFile(bin + '/pg_restore', '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   return { GATEWAY_DATA_DIR: data, GATEWAY_CONFIG_FILE: config, PATH: bin + ':' + process.env.PATH };
 }
 const members = async archive => (await exec('tar', ['-tf', archive])).stdout.split('\n').filter(Boolean).sort();
+// The schema the bundle's metadata records and the one the pg_dump stand-in was asked for.
+const dumpedSchema = async (env, archive) => ({
+  metadata: /^schema=(.*)$/m.exec((await exec('tar', ['-xOf', archive, 'metadata'])).stdout)?.[1],
+  pg_dump: /^--schema=(.*)$/m.exec(await readFile(env.PATH.split(':')[0] + '/pg_dump.args', 'utf8'))?.[1],
+});
 test('backup credentials require reauthentication, never return plaintext, and reject unsafe targets and stale writes', async () => {
   const f = await fixture();
   try {
@@ -243,6 +249,11 @@ test('local bundles are encrypted to the backup recipient and uploaded without a
     assert.ok(!uploads[0].bytes.includes(Buffer.from('fixture database dump')));
     await exec('age', ['-d', '-i', f.key, '-o', f.dir + '/bundle.tar', root + '/' + row.local_file]);
     assert.deepEqual(await members(f.dir + '/bundle.tar'), bundleMembers);
+    // The worker hands the script the schema it serves.
+    assert.deepEqual(await dumpedSchema(vars, f.dir + '/bundle.tar'), {
+      metadata: f.app.db.schema,
+      pg_dump: f.app.db.schema,
+    });
   } finally {
     for (const [key, value] of Object.entries(saved))
       if (value === undefined) delete process.env[key];
@@ -262,11 +273,19 @@ test('without a recipient the backup script warns, keeps a plaintext bundle and 
       await utimes(root + '/' + name, old, old);
     }
     await writeFile(root + '/relay-20990101T000000Z-recent.tar.age', 'recent');
-    const result = await exec('sh', [backupScript], { env: { ...env, BACKUP_DIR: root, BACKUP_RETENTION_DAYS: '14' } });
+    const result = await exec('sh', [backupScript], {
+      env: { ...env, BACKUP_DIR: root, BACKUP_RETENTION_DAYS: '14', GATEWAY_DATABASE_SCHEMA: undefined },
+    });
     assert.match(result.stderr, /not encrypted/);
     const file = /^Backup completed: (relay-[A-Za-z0-9-]+\.tar)$/m.exec(result.stdout)?.[1];
     assert.ok(file, result.stdout);
     assert.deepEqual(await members(root + '/' + file), bundleMembers);
+    // Without GATEWAY_DATABASE_SCHEMA the script uses the gateway's default schema.
+    assert.deepEqual(await dumpedSchema(env, root + '/' + file), { metadata: 'public', pg_dump: 'public' });
+    await assert.rejects(
+      exec('sh', [backupScript], { env: { ...env, BACKUP_DIR: root, GATEWAY_DATABASE_SCHEMA: 'relay;x' } }),
+      e => /Invalid GATEWAY_DATABASE_SCHEMA/.test(e.stderr),
+    );
     assert.deepEqual(
       (await readdir(root)).filter(name => !name.startsWith('.')).sort(),
       [file, 'relay-20990101T000000Z-recent.tar.age', 'unrelated.tar'].sort(),
@@ -282,10 +301,14 @@ test('a gateway whose admin token came from the environment still backs up with 
     const env = await scriptEnvironment(dir),
       root = dir + '/backups';
     rmSync(env.GATEWAY_DATA_DIR + '/admin.token');
-    const result = await exec('sh', [backupScript], { env: { ...process.env, ...env, BACKUP_DIR: root } });
+    const result = await exec('sh', [backupScript], {
+      env: { ...process.env, ...env, BACKUP_DIR: root, GATEWAY_DATABASE_SCHEMA: 'relay' },
+    });
     const file = /^Backup completed: (relay-[A-Za-z0-9-]+\.tar)$/m.exec(result.stdout)?.[1];
     assert.ok(file, result.stdout);
     assert.deepEqual(await members(root + '/' + file), bundleMembers);
+    // Compose sets GATEWAY_DATABASE_SCHEMA=relay for both containers.
+    assert.deepEqual(await dumpedSchema(env, root + '/' + file), { metadata: 'relay', pg_dump: 'relay' });
     assert.equal((await exec('tar', ['-xOf', root + '/' + file, 'admin.token'])).stdout, '');
   } finally {
     rmSync(dir, { recursive: true, force: true });
