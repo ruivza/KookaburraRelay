@@ -17,3 +17,4 @@ dist/
 relay-*.tar
 *.tar.age
 .uploads/
+.claude/

@@ -54,7 +54,7 @@ Daily quotas are stored in PostgreSQL and reset at UTC midnight; restarts, re-re
 
 Defaults include 300/global and 120/application registrations per minute; 10,000/global and 5,000/application reception challenges per day; 2,000/global and 1,000/application pending registrations; and four concurrent reception challenges. New jobs: 100,000/global, 50,000/application, 240/device per day. Delivery attempts: 150,000/global, 75,000/application per day.
 
-Requests also have process-level admission limits before database work: 6,000/global and 600/source per minute, and 64 active handlers. These in-memory limits reset on restart. Resource rejection returns 429 or 503 with a stable `reason` and `Retry-After`; use exponential backoff and jitter.
+Requests also have process-level admission limits before database work: 6,000/global and 600/source per minute, and 64 active handlers. Per-address, per-device and per-application limits on login, console, enrollment, confirmation and sending are also counted in memory. All of these reset on restart; daily quotas are stored in PostgreSQL and persist. At most 20,000 enrollment and confirmation keys are tracked at once; beyond that new enrollments get 503 `limit_capacity`. Other keys never fail on capacity. Resource rejection returns 429 or 503 with a stable `reason` and `Retry-After`; use exponential backoff and jitter.
 
 ## Webhook alerts
 

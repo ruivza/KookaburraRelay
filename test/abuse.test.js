@@ -294,7 +294,7 @@ test('memory admission and logging remain bounded under changing keys and slow w
   let now = 0;
   const abuse = new AbuseProtection({ now: () => now });
   for (let n = 0; n < 11000; n++) abuse.memory('source:' + n, 1);
-  assert.equal(abuse.buckets.size, 10000);
+  assert.equal(abuse.limiter.windows.size, 10000);
   assert.equal(abuse.memory('extra', 1), false);
   now = 60001;
   assert.equal(abuse.memory('extra', 1), true);
@@ -406,18 +406,11 @@ test('junk enrollments cannot exhaust rate-limit capacity for administrators and
     const grant = await f.enroll();
     const unknown = await f.call('/v1/registrations', { ...f.input(2), appId: 'unknown-app' }, '', '203.0.113.7');
     assert.equal(unknown.status, 404);
-    assert.equal(
-      (
-        await f.app.db
-          .prepare("SELECT count(*) n FROM limits WHERE key LIKE '%unknown-app%' OR key LIKE '%203.0.113.7'")
-          .get()
-      ).n,
-      0,
-    );
-    // Model a flood of caller-chosen device tokens that filled the enrollment share of the table.
-    await f.app.db.query("INSERT INTO limits SELECT 'enroll-token:junk-'||n,$1,1 FROM generate_series(1,20000) n", [
-      f.app.abuse.now(),
-    ]);
+    const { enrollment, general } = f.app.rateLimits;
+    const keys = [...enrollment.windows.keys(), ...general.windows.keys()];
+    assert.equal(keys.filter(key => key.includes('unknown-app') || key.endsWith('203.0.113.7')).length, 0);
+    // Model a flood of caller-chosen device tokens that filled the enrollment counters.
+    for (let n = 0; enrollment.windows.size < 20000; n++) enrollment.take('enroll-token:junk-' + n, 6, 3600000);
     const blocked = await f.call('/v1/registrations', f.input(3), '', '203.0.113.8');
     assert.equal(blocked.status, 503);
     assert.equal(blocked.body.reason, 'limit_capacity');
@@ -443,7 +436,7 @@ test('a source exhausting its own request budget neither consumes nor blocks the
     }
   }
   assert.equal(limited, 5500);
-  assert.equal(abuse.buckets.get('http:global').count, 600);
+  assert.equal(abuse.limiter.count('http:global'), 600);
   abuse.admit('198.51.100.2')();
   let admitted = 601,
     reason;

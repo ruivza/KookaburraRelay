@@ -1,4 +1,5 @@
 import { cancelJobs } from './delivery.js';
+import { RateLimiter } from './rate-limit.js';
 const DAY = 86400000;
 // A confirmed grant can be fetched again only for idempotent client retries; then its plaintext is erased.
 export const confirmReplay = 600000;
@@ -32,7 +33,8 @@ export class AbuseProtection {
     Object.assign(this, { db, now });
     this.settings = { ...abuseDefaults };
     this.pendingRejections = new Map();
-    this.buckets = new Map();
+    // Full means refuse: admission and log sampling fail closed rather than reset live windows.
+    this.limiter = new RateLimiter({ capacity: 10000, evict: false, now: () => this.now() });
     this.rejections = Object.create(null);
     this.requests = 0;
     this.challenges = 0;
@@ -152,23 +154,7 @@ export class AbuseProtection {
     });
   }
   memory(key, maximum, window = 60000) {
-    const time = this.now();
-    let bucket = this.buckets.get(key);
-    if (bucket && bucket.until <= time) {
-      this.buckets.delete(key);
-      bucket = null;
-    }
-    if (!bucket) {
-      if (this.buckets.size >= 10000) {
-        for (const [key, value] of this.buckets) if (value.until <= time) this.buckets.delete(key);
-        if (this.buckets.size >= 10000) return false;
-      }
-      bucket = { count: 0, until: time + window };
-      this.buckets.set(key, bucket);
-    }
-    if (bucket.count >= maximum) return false;
-    bucket.count++;
-    return true;
+    return !this.limiter.take(key, maximum, window);
   }
   admit(address) {
     // Only requests their source may make reach the shared bucket; one flood cannot starve everyone.
@@ -260,6 +246,7 @@ export class AbuseProtection {
       await this.flushRejections();
       await this.db.prepare('DELETE FROM abuse_events WHERE time<?').run(this.now() - 7 * DAY);
       await this.db.prepare('DELETE FROM abuse_quotas WHERE expires<=?').run(this.now());
+      // Rows left by versions that counted rate limits in PostgreSQL.
       await this.db.prepare('DELETE FROM limits WHERE start<?').run(this.now() - 3600000);
       // Erase plaintext grants whose retry window has passed; rows confirmed before confirmed_at existed have none.
       await this.db
@@ -282,7 +269,7 @@ export class AbuseProtection {
             expired.map(r => r.id),
           ]);
       });
-      for (const [key, value] of this.buckets) if (value.until <= this.now()) this.buckets.delete(key);
+      this.limiter.prune();
     })();
     try {
       await this.cleaning;

@@ -40,7 +40,7 @@ test('proxy clients have independent login limits and untrusted headers cannot s
   try {
     app = await createGateway({ dataDir, adminToken, autoStart: false, trustedProxies: '127.0.0.1' });
     await new Promise(r => app.server.listen(0, '127.0.0.1', r));
-    await app.db.prepare('INSERT INTO limits VALUES(?,?,?)').run('login:203.0.113.1', Date.now(), 20);
+    for (let n = 0; n < 20; n++) app.rateLimits.general.take('login:203.0.113.1', 20, 60000);
     const call = ip =>
       fetch('http://127.0.0.1:' + app.server.address().port + '/auth/login', {
         method: 'POST',
@@ -53,7 +53,7 @@ test('proxy clients have independent login limits and untrusted headers cannot s
     app = await createGateway({ dataDir, adminToken, autoStart: false, trustedProxies: '' });
     await new Promise(r => app.server.listen(0, '127.0.0.1', r));
     assert.equal((await call('203.0.113.1')).status, 401);
-    assert.equal((await app.db.prepare('SELECT count FROM limits WHERE key=?').get('login:127.0.0.1')).count, 1);
+    assert.equal(app.rateLimits.general.count('login:127.0.0.1'), 1);
   } finally {
     await app?.close();
     rmSync(dataDir, { recursive: true, force: true });
@@ -76,7 +76,7 @@ test('addresses in one IPv6 /64 share login and admission budgets', async () => 
   try {
     app = await createGateway({ dataDir, adminToken, autoStart: false, trustedProxies: '127.0.0.1' });
     await new Promise(r => app.server.listen(0, '127.0.0.1', r));
-    await app.db.prepare('INSERT INTO limits VALUES(?,?,?)').run('login:2001:db8:1:2::/64', Date.now(), 19);
+    for (let n = 0; n < 19; n++) app.rateLimits.general.take('login:2001:db8:1:2::/64', 20, 60000);
     const call = ip =>
       fetch('http://127.0.0.1:' + app.server.address().port + '/auth/login', {
         method: 'POST',
@@ -86,8 +86,8 @@ test('addresses in one IPv6 /64 share login and admission budgets', async () => 
     assert.equal((await call('2001:db8:1:2::a')).status, 401);
     assert.equal((await call('2001:db8:1:2:ffff:1234:5678:9abc')).status, 429);
     assert.equal((await call('2001:db8:1:3::a')).status, 401);
-    assert.equal(app.abuse.buckets.get('http:2001:db8:1:2::/64').count, 2);
-    assert.equal(app.abuse.buckets.has('http:2001:db8:1:2::a'), false);
+    assert.equal(app.abuse.limiter.count('http:2001:db8:1:2::/64'), 2);
+    assert.equal(app.abuse.limiter.count('http:2001:db8:1:2::a'), 0);
   } finally {
     await app?.close();
     rmSync(dataDir, { recursive: true, force: true });

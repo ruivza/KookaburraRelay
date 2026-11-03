@@ -20,6 +20,7 @@ import { Observability } from './observability.js';
 import { adminAPI } from './admin-api.js';
 import { deviceAPI } from './device-api.js';
 import { AbuseProtection } from './abuse.js';
+import { RateLimiter } from './rate-limit.js';
 import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
 // Logged routes and error codes never carry identifiers, bodies or messages.
 const routeOf = path => {
@@ -188,30 +189,17 @@ export async function createGateway({
     const monitorPath = resolve(dataDir, 'monitor.token');
     if (!existsSync(monitorPath)) writeFileSync(monitorPath, randomSecret(), { mode: 0o600, flag: 'wx' });
     const monitorToken = readFileSync(monitorPath, 'utf8').trim();
-    // Only unauthenticated enrollment keys share a row cap; operator, login and sender keys never fail on capacity.
+    // Unauthenticated enrollment keys have their own capped table that refuses new keys when full; operator, login
+    // and sender keys never fail on capacity, the least recently used one is dropped instead.
     const enrollmentKey = /^(enroll-ip|enroll-token|confirm-ip):/;
-    async function limit(key, maximum, window = 3600000) {
-      await db.transaction(async () => {
-        await db.query('SELECT pg_advisory_xact_lock(72841105)');
-        const time = now();
-        const previous = await db.prepare('SELECT * FROM limits WHERE key=?').get(key);
-        if (previous && previous.start > time - window && previous.count >= maximum)
-          abuse.reject('source_or_device', (previous.start + window - time) / 1000);
-        if (
-          !previous &&
-          enrollmentKey.test(key) &&
-          (await db.prepare("SELECT count(*) n FROM limits WHERE key LIKE 'enroll-%' OR key LIKE 'confirm-ip:%'").get())
-            .n >= 20000
-        )
-          abuse.reject('limit_capacity', 60, 503);
-        await db
-          .prepare(
-            `INSERT INTO limits VALUES(?,?,1) ON CONFLICT(key) DO UPDATE SET
-          count=CASE WHEN limits.start<=? THEN 1 ELSE limits.count+1 END,
-          start=CASE WHEN limits.start<=? THEN excluded.start ELSE limits.start END`,
-          )
-          .run(key, time, time - window, time - window);
-      });
+    const rateLimits = {
+      enrollment: new RateLimiter({ capacity: 20000, evict: false, now }),
+      general: new RateLimiter({ capacity: 100000, evict: true, now }),
+    };
+    function limit(key, maximum, window = 3600000) {
+      const result = (enrollmentKey.test(key) ? rateLimits.enrollment : rateLimits.general).take(key, maximum, window);
+      if (result?.full) abuse.reject('limit_capacity', 60, 503);
+      if (result) abuse.reject('source_or_device', result.retryAfter / 1000);
     }
 
     function bearer(req) {
@@ -563,6 +551,7 @@ export async function createGateway({
       abuse,
       access,
       alerts,
+      rateLimits,
       close,
     };
   } catch (error) {
