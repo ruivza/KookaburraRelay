@@ -9,7 +9,8 @@ const column = name => {
 // validates its own settings.
 export class SettingsStore {
   constructor(db, table) {
-    Object.assign(this, { db, table: column(table) });
+    this.db = db;
+    this.table = column(table);
   }
   async initialize(initial) {
     const names = Object.keys(initial).map(column);

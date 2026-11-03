@@ -98,11 +98,9 @@ export function validateGoogleVerdict(verdict, { policy, payload, now = Date.now
 }
 export class GoogleIntegrity {
   constructor({ fetcher = fetch, now = Date.now } = {}) {
-    Object.assign(this, {
-      fetcher,
-      now,
-      oauth: new GoogleOAuth({ scope: 'https://www.googleapis.com/auth/playintegrity', fetcher, now }),
-    });
+    this.fetcher = fetcher;
+    this.now = now;
+    this.oauth = new GoogleOAuth({ scope: 'https://www.googleapis.com/auth/playintegrity', fetcher, now });
   }
   async json(url, options) {
     try {

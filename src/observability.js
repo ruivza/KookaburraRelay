@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { fail, DAY } from './util.js';
 export class Observability {
   constructor({ db, now = Date.now, queue, backups }) {
-    Object.assign(this, { db, now, queue, backups });
+    this.db = db;
+    this.now = now;
+    this.queue = queue;
+    this.backups = backups;
     this.sampleFailures = 0;
     this.lastSampleAt = null;
     this.started = now();

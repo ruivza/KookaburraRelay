@@ -14,7 +14,8 @@ const kinds = ['app', 'notifications', 'quota', 'policy', 'channel'];
 
 export class ConfigCache {
   constructor(db, { capacity = 10000 } = {}) {
-    Object.assign(this, { db, capacity });
+    this.db = db;
+    this.capacity = capacity;
     this.entries = new Map();
     this.generation = 0;
     // Changes between their pre-commit and post-commit hooks; nothing is stored while any is in flight.

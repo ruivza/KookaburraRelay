@@ -6,6 +6,11 @@ import { createHash } from 'node:crypto';
 import { validateTarget } from './storage-target.js';
 import { publicLookup } from './net-guard.js';
 export class S3Storage {
+  /**
+   * @param {any} settings
+   * @param {string} applicationKey
+   * @param {{ client?: any, requestHandler?: any, resolver?: any }} [options]
+   */
   constructor(settings, applicationKey, { client, requestHandler, resolver } = {}) {
     settings = validateTarget(settings);
     this.settings = settings;
@@ -35,6 +40,12 @@ export class S3Storage {
         requestHandler: requestHandler || { connectionTimeout: 10000, requestTimeout: 120000, ...agent },
       });
   }
+  /**
+   * @param {string} file
+   * @param {string} key
+   * @param {AbortSignal} signal
+   * @param {{ versioned?: boolean, backupId?: string }} [options]
+   */
   async upload(file, key, signal, { versioned = false, backupId } = {}) {
     if (versioned && (!backupId || typeof backupId !== 'string')) throw Error('RemoteVerificationFailed');
     const { size } = await stat(file);

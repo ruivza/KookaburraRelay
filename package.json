@@ -19,6 +19,7 @@
     "test:docker": "sh scripts/test-docker.sh",
     "check": "node scripts/check.mjs",
     "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json",
     "format": "prettier --write \"**/*.{js,mjs}\"",
     "format:check": "prettier --check \"**/*.{js,mjs}\"",
     "bench": "node scripts/bench.mjs",
@@ -37,8 +38,10 @@
   "version": "0.3.0",
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@types/node": "24.19.2",
     "eslint": "10.13.0",
     "globals": "17.13.0",
-    "prettier": "3.9.10"
+    "prettier": "3.9.10",
+    "typescript": "7.0.2"
   }
 }

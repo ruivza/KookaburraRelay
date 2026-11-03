@@ -50,7 +50,9 @@ async function load({ base, devices, concurrency, sources, appId, serverId }) {
           res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }));
         },
       );
-      req.on('error', error => resolve({ status: 0, body: JSON.stringify({ reason: error.code || 'network_error' }) }));
+      req.on('error', (/** @type {NodeJS.ErrnoException} */ error) =>
+        resolve({ status: 0, body: JSON.stringify({ reason: error.code || 'network_error' }) }),
+      );
       req.end(payload);
     });
   async function lane() {
@@ -256,6 +258,7 @@ async function run(scenario, { options, url, pg, createGateway, counter, observe
 
     // One real enrollment through HTTP provides a template row; the rest are cloned with distinct
     // identities because enrollment is limited to 60 per hour per address.
+    /** @type {(path: string, body: any) => Promise<any>} */
     const call = async (path, body) => {
       const res = await fetch(base + path, {
         method: 'POST',

@@ -33,7 +33,10 @@ export async function boundedFetch(fetcher, url, options, active) {
 // response throws with its HTTP `responseStatus`.
 export class GoogleOAuth {
   constructor({ scope, fetcher = fetch, now = Date.now }) {
-    Object.assign(this, { scope, fetcher, now, controllers: new Set() });
+    this.scope = scope;
+    this.fetcher = fetcher;
+    this.now = now;
+    this.controllers = new Set();
     this.cached = new Map();
     this.pending = new Map();
   }

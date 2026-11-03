@@ -12,6 +12,7 @@
 - The backup worker and `ops/backup-once.sh` default `GATEWAY_DATABASE_SCHEMA` to `public` like the gateway instead of `relay`; bundles record the dumped schema and `ops/verify-backup.sh` restores that schema. Compose deployments, which set `relay`, are unchanged.
 - The rejections alert webhook sends `value` as a number, like the other alerts.
 - Run maintenance cleanup statements on their own connection instead of the request pool, and check the delivery queue cap without counting every pending job.
+- Type-check `src/` and `scripts/` with TypeScript in loose mode (`npm run typecheck`, also in CI and `scripts/test-docker.sh`). Nothing is compiled; constructors assign their fields one by one so the checker can see them.
 
 ## 0.3.0 — 2026-11-03
 

@@ -3,7 +3,7 @@
 # PostgreSQL 18 containers. Needs only Docker and a POSIX shell (Linux, macOS,
 # or Git Bash on Windows); Node and PostgreSQL need not be installed on the host.
 #
-#   scripts/test-docker.sh                          npm run check, lint, format:check, test
+#   scripts/test-docker.sh                          npm run check, lint, typecheck, format:check, test
 #   scripts/test-docker.sh npm run bench -- --jobs 2000
 #
 # Every run uses its own network and container names and removes them on exit.
@@ -34,7 +34,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if [ $# -eq 0 ]; then set -- sh -c 'npm run check && npm run lint && npm run format:check && npm test'; fi
+if [ $# -eq 0 ]; then set -- sh -c 'npm run check && npm run lint && npm run typecheck && npm run format:check && npm test'; fi
 
 docker network create "$net" >/dev/null
 docker run -d --rm --name "$pg" --network "$net" \

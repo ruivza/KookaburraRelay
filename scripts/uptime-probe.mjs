@@ -5,6 +5,10 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 export class UptimeProbe {
+  /**
+   * @param {{ db: DatabaseSync, origin: string, credential: string, monitor?: string,
+   *   fetcher?: (url: string, init?: RequestInit) => Promise<{ ok: boolean, json(): Promise<any> }>, now?: () => number }} options
+   */
   constructor({ db, origin, credential, monitor = 'external-1', fetcher = fetch, now = Date.now }) {
     const url = new URL(origin);
     if (
@@ -19,7 +23,12 @@ export class UptimeProbe {
       throw Error('GATEWAY_URL must be an HTTPS origin (or loopback HTTP)');
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(monitor) || typeof credential !== 'string' || credential.length < 32)
       throw Error('Invalid probe identity or token');
-    Object.assign(this, { db, origin: url.origin, credential, monitor, fetcher, now });
+    this.db = db;
+    this.origin = url.origin;
+    this.credential = credential;
+    this.monitor = monitor;
+    this.fetcher = fetcher;
+    this.now = now;
     db.exec(
       'CREATE TABLE IF NOT EXISTS samples(time INTEGER PRIMARY KEY,ok INTEGER NOT NULL,latency INTEGER NOT NULL)',
     );
@@ -41,10 +50,11 @@ export class UptimeProbe {
     this.db.prepare('INSERT OR REPLACE INTO samples VALUES(?,?,?)').run(time, +ok, latency);
     this.db.prepare('DELETE FROM samples WHERE time<?').run(this.now() - 30 * 86400000);
     // Up to 100 missed observations per tick; never discard until acknowledged.
+    /** @type {{ time: number, ok: boolean, latency: number }[]} */
     const samples = this.db
       .prepare('SELECT * FROM samples ORDER BY time LIMIT 100')
       .all()
-      .map(s => ({ ...s, ok: !!s.ok }));
+      .map(s => ({ time: Number(s.time), ok: !!s.ok, latency: Number(s.latency) }));
     try {
       const response = await this.fetcher(this.origin + '/monitor/report', {
         method: 'POST',

@@ -23,6 +23,11 @@ export class APNsProvider {
     this.issued = now;
     return (this.jwt = jwt);
   }
+  /**
+   * @param {{ id: string, push_environment: string }} device
+   * @param {string} token
+   * @param {Record<string, any>} [payload]
+   */
   async send(
     device,
     token,
