@@ -40,14 +40,17 @@ export class Database {
   async query(sql, values = []) {
     return (this.context.getStore()?.client || this.pool).query(sql, values);
   }
-  // Runs fn just before the current transaction sends COMMIT and again once it has committed (once, now, outside a
-  // transaction). For idempotent cache invalidation: anyone who waited on this transaction's row locks resumes after
-  // the first call, so finds nothing stale, and the second drops what was loaded in between. A rollback skips the
-  // second call. It also marks the transaction as having changed configuration, so its own cached reads go to the
-  // database.
+  // Calls fn('before') just before the current transaction sends COMMIT, then fn('after') once it has committed or
+  // fn('rollback') if COMMIT failed; outside a transaction it calls fn('before') and fn('after') now. Cache
+  // invalidation uses the window between the two calls: anyone who waited on this transaction's row locks resumes
+  // inside or after it. It also marks the transaction as having changed configuration, so its own cached reads go to
+  // the database.
   onCommit(fn) {
     const state = this.context.getStore();
-    if (!state) return fn();
+    if (!state) {
+      fn('before');
+      return fn('after');
+    }
     state.changedConfiguration = true;
     state.committed.push(fn);
   }
@@ -89,26 +92,33 @@ export class Database {
     }
     const client = await this.pool.connect();
     const state = { client, changedConfiguration: false, committed: [], savepoints: 0 };
-    let result;
+    let result,
+      committing = false;
     try {
       await client.query('BEGIN');
       result = await this.context.run(state, fn);
-      for (const hook of state.committed) hook();
+      committing = true;
+      for (const hook of state.committed) hook('before');
       await client.query('COMMIT');
     } catch (error) {
+      if (committing) for (const hook of state.committed) hook('rollback');
       await client.query('ROLLBACK');
       throw error;
     } finally {
       client.release();
     }
-    for (const hook of state.committed) hook();
+    for (const hook of state.committed) hook('after');
     return result;
+  }
+  // Creating the schema first lets callers take schema-scoped locks before migrating it.
+  async ensureSchema() {
+    await this.exec(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`);
   }
   // Applies src/migrations/NNN-name.sql files not yet recorded in schema_migrations, in order, in one transaction.
   // Versions 1-3 predate numbered files: 1 marked the original schema file, 2 marks an initialized gateway and
   // 3 a SQLite import; numbered files start at 4.
   async initialize() {
-    await this.exec(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`);
+    await this.ensureSchema();
     await this.transaction(async () => {
       await this.query('SELECT pg_advisory_xact_lock(hashtext(current_schema()), 72841101)');
       await this.exec('CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY)');

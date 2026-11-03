@@ -42,8 +42,8 @@ async function listing(db, table, query, columns, timeColumn, select = '*') {
 export function adminRoutes({ db, applications, queue, monitor, maintenance, abuse, access, alerts, now }) {
   const admin = (method, pattern, handler, audit) => route(method, pattern, { auth: 'admin', audit }, handler);
   const value = load => async context => ({ value: await load(context) });
-  const registration = async id => {
-    const entry = await db.prepare('SELECT * FROM registrations WHERE id=? AND expires>?').get(id, now());
+  const registration = async (id, lock = '') => {
+    const entry = await db.prepare('SELECT * FROM registrations WHERE id=? AND expires>?' + lock).get(id, now());
     if (!entry) fail(404, 'Registration not found');
     return entry;
   };
@@ -259,9 +259,13 @@ export function adminRoutes({ db, applications, queue, monitor, maintenance, abu
       'DELETE',
       '/admin/devices/:id',
       async ({ params }) => {
-        const entry = await registration(params.id);
-        await queue.cancelRegistration(entry.id);
-        await db.prepare('DELETE FROM registrations WHERE id=?').run(entry.id);
+        // The registration row before its jobs, the lock order every path keeps.
+        const entry = await db.transaction(async () => {
+          const locked = await registration(params.id, ' FOR UPDATE');
+          await queue.cancelRegistration(locked.id);
+          await db.prepare('DELETE FROM registrations WHERE id=?').run(locked.id);
+          return locked;
+        });
         return { value: { revoked: true }, appId: entry.app_id, channel: entry.channel };
       },
       'device.revoke',

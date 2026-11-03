@@ -91,6 +91,9 @@ test('a warm send costs at most 12 database round trips and a delivery at most 6
   assert.equal(request.result.status, 202);
   t.diagnostic('send round trips: ' + request.count());
   assert.ok(request.count() <= 12, 'send took ' + request.count());
+  // Send windows live apart from the per-address ones, which a source rotating addresses could evict.
+  assert.equal(app.rateLimits.credentials.count('send-device:' + grant.registrationId), 1);
+  assert.equal(app.rateLimits.general.count('send-device:' + grant.registrationId), 0);
 
   const delivery = await roundTrips(() => app.queue.execute(request.result.body.id));
   assert.equal(delivery.result.state, 'accepted');

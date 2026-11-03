@@ -126,3 +126,65 @@ test('a nested transaction is a savepoint: its failure keeps the outer transacti
     await db.close();
   }
 });
+
+test('the SQLite importer stops on a source column the target lacks, except ones removed on purpose', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'relay-import-columns-')),
+    source = join(dir, 'gateway.sqlite'),
+    schema = 'test_import_columns_' + randomUUID().replaceAll('-', '');
+  const db = new Database(process.env.GATEWAY_DATABASE_URL, schema);
+  const sqlite = new DatabaseSync(source);
+  sqlite.exec(
+    readFileSync(new URL('../src/migrations/004-baseline.sql', import.meta.url), 'utf8')
+      .replace(/^ALTER TABLE .*;$/gm, '')
+      .replace(/BIGSERIAL/g, 'INTEGER')
+      .replace(/JSONB/g, 'TEXT')
+      .replace(/ ON CONFLICT DO NOTHING/g, ''),
+  );
+  sqlite.exec('ALTER TABLE gateway_logs ADD COLUMN unknown TEXT');
+  sqlite
+    .prepare('INSERT INTO gateway_logs VALUES(?,?,?,?,?,?,?,?,?,?)')
+    .run(1, 1790000000000, 'audit', 'test', 'notes', 'apns', 200, 5, 'req', 'value');
+  sqlite.close();
+  try {
+    await assert.rejects(migrate(source, db), /Target lacks column gateway_logs\.unknown/);
+  } finally {
+    await db.exec(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a gateway refused by the ownership lock leaves the schema unmigrated', async () => {
+  const { createGateway } = await import('../src/server.js');
+  const schema = 'test_owner_first_' + randomUUID().replaceAll('-', '');
+  const dataDir = mkdtempSync(join(tmpdir(), 'relay-owner-first-'));
+  const db = new Database(process.env.GATEWAY_DATABASE_URL, schema);
+  await db.ensureSchema();
+  const holder = await db.dedicated();
+  try {
+    assert.equal(
+      (await holder.query('SELECT pg_try_advisory_lock(hashtext(current_schema()), 72841102) locked')).rows[0].locked,
+      true,
+    );
+    await assert.rejects(
+      createGateway({
+        databaseSchema: schema,
+        dataDir,
+        adminToken: 'owner-first-operator'.repeat(3),
+        autoStart: false,
+      }),
+      /Another gateway is using this database/,
+    );
+    assert.equal(
+      await db
+        .prepare("SELECT 1 FROM information_schema.tables WHERE table_schema=? AND table_name='schema_migrations'")
+        .get(schema),
+      undefined,
+    );
+  } finally {
+    await holder.end();
+    await db.exec(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

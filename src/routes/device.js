@@ -160,7 +160,8 @@ export function deviceRoutes({ applications, db, queue, now, limit, seal, open, 
           };
           await db.transaction(async () => {
             for (const old of await db
-              .prepare('SELECT id FROM registrations WHERE token_hash=? AND id<>?')
+              // Registration rows before their jobs, the lock order every path keeps.
+              .prepare('SELECT id FROM registrations WHERE token_hash=? AND id<>? FOR UPDATE')
               .all(entry.token_hash, entry.id))
               await queue.cancelRegistration(old.id);
             await db.prepare('DELETE FROM registrations WHERE token_hash=? AND id<>?').run(entry.token_hash, entry.id);

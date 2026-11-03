@@ -158,8 +158,9 @@ export class AccessControl {
         )
         .run(appId, JSON.stringify(settings), randomUUID(), encrypted);
       this.cache.invalidate('policy', appId);
-      await cancelJobs(this.db, this.now(), 'AccessPolicyChanged', 'app_id=?', [appId]);
+      // Registrations before their jobs, the lock order every path keeps.
       await this.db.prepare('DELETE FROM registrations WHERE app_id=?').run(appId);
+      await cancelJobs(this.db, this.now(), 'AccessPolicyChanged', 'app_id=?', [appId]);
       await this.db.prepare('DELETE FROM integrity_keys WHERE app_id=?').run(appId);
       await this.db.prepare('DELETE FROM integrity_challenges WHERE app_id=?').run(appId);
     });
@@ -408,7 +409,9 @@ export class AccessControl {
   }
   async commitRegistration(body, grant) {
     if ((await this.policy(body.appId ?? defaultApp)).revision !== grant.revision) fail(409, 'Access policy changed');
-    const row = await this.cache.server(body.serverId);
+    // Read under a share lock, not from the cache: blocking or rotating the server takes its row FOR UPDATE and
+    // then deletes its registrations, so it either waits for this registration to commit or is seen by it.
+    const row = await this.db.prepare('SELECT * FROM trusted_servers WHERE id=? FOR SHARE').get(body.serverId);
     if (
       row?.state === 'blocked' ||
       (grant.server && (!row || row.state !== 'approved' || row.revision !== grant.server.revision))

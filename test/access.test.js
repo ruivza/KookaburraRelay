@@ -361,3 +361,33 @@ test('a server ticket presented by two registrations at once is consumed by only
     await f.close();
   }
 });
+
+test('blocking a server waits for a registration it is committing, then removes it', async () => {
+  const f = await fixture();
+  try {
+    await f.app.access.createServer({ id: 'server', name: 'Business', apps: ['perch-mail'] });
+    const { credential } = await f.app.access.updateServer('server', { action: 'approve' });
+    const input = f.input();
+    const { appId, deviceId, serverId } = input;
+    input.serverTicket = (await f.app.access.ticket(credential, { appId, deviceId, serverId })).ticket;
+    // Hold the registration inside its transaction just after it checked the server.
+    const original = f.app.access.commitRegistration.bind(f.app.access);
+    let reached, release;
+    const inside = new Promise(resolve => (reached = resolve)),
+      gate = new Promise(resolve => (release = resolve));
+    f.app.access.commitRegistration = async (body, grant) => {
+      await original(body, grant);
+      reached();
+      await gate;
+    };
+    const registering = f.call('/v1/registrations', input);
+    await inside;
+    const blocking = f.app.access.updateServer('server', { action: 'block' });
+    await new Promise(resolve => setTimeout(resolve, 300));
+    release();
+    await Promise.all([registering, blocking]);
+    assert.equal((await f.app.db.prepare("SELECT count(*) n FROM registrations WHERE server_id='server'").get()).n, 0);
+  } finally {
+    await f.close();
+  }
+});

@@ -72,6 +72,8 @@ export class ChannelStore {
     });
   }
   async enabled(id, kind) {
+    // Unknown channel names are answered without a cache entry, so callers cannot fill the cache with them.
+    if (!channelCatalog.some(c => c.id === kind && c.implemented)) return false;
     return !!(await this.cached(id, kind))?.enabled;
   }
   async describe(id, kind) {
@@ -206,19 +208,25 @@ export class ChannelStore {
         : environment !== 'production'
     )
       fail(400, 'Environment not enabled for this application');
+    // An adapter belongs to the cache entry it was built from. A resolve that raced a configuration change may build
+    // one from the old entry; the first resolve with the new entry replaces it, so old keys never outlive the change.
     const key = id + ':' + kind;
-    if (!this.adapters.has(key)) this.adapters.set(key, this.make(kind, { ...config }));
-    return this.adapters.get(key);
+    const current = this.adapters.get(key);
+    if (current?.channel === channel) return current.adapter;
+    current?.adapter.close();
+    const adapter = this.make(kind, { ...config });
+    this.adapters.set(key, { channel, adapter });
+    return adapter;
   }
   invalidate(id) {
     for (const kind of ['apns', 'fcm']) {
       const key = id + ':' + kind;
-      this.adapters.get(key)?.close();
+      this.adapters.get(key)?.adapter.close();
       this.adapters.delete(key);
     }
   }
   close() {
-    for (const adapter of this.adapters.values()) adapter.close();
+    for (const { adapter } of this.adapters.values()) adapter.close();
     this.adapters.clear();
   }
 }

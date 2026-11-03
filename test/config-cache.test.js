@@ -85,7 +85,17 @@ test('every configuration change is visible to the request path immediately', as
   assert.equal(before.adapter.provider.topic, 'com.example.one');
   assert.deepEqual(await applications.capabilities('perch-mail', 'apns'), ['sync']);
 
+  const stale = await applications.channels.cached('perch-mail', 'apns');
   await applications.configureChannel('perch-mail', 'apns', apns('com.example.two'));
+  // A send that read the channel before the change commits builds an adapter from the old configuration...
+  const cached = applications.channels.cached;
+  applications.channels.cached = async () => stale;
+  assert.equal(
+    (await applications.channels.resolve('perch-mail', 'apns', 'production')).provider.topic,
+    'com.example.one',
+  );
+  applications.channels.cached = cached;
+  // ...which the next resolve replaces instead of keeping until a restart.
   const after = await applications.resolve('perch-mail', 'apns', 'production');
   assert.notEqual(after.revision, before.revision);
   assert.equal(after.adapter.provider.topic, 'com.example.two');
@@ -121,4 +131,31 @@ test('every configuration change is visible to the request path immediately', as
   await applications.remove('second');
   await applications.create({ id: 'second', name: 'Second' });
   assert.equal((await abuse.effective('second')).taskAppDay, abuse.settings.taskAppDay);
+});
+
+test('values read while a change is between its pre- and post-commit hooks are never stored', async () => {
+  const hooks = [];
+  const db = { changedConfiguration: () => false, onCommit: hook => hooks.push(hook) };
+  const cache = new ConfigCache(db);
+  cache.invalidate('app', 'a');
+  hooks[0]('before');
+  // A reader that misses now may see the database from before the commit.
+  assert.equal(await cache.get('app:a', async () => 'old'), 'old');
+  assert.equal(cache.entries.has('app:a'), false);
+  hooks[0]('after');
+  assert.equal(await cache.get('app:a', async () => 'new'), 'new');
+  assert.equal(cache.entries.get('app:a'), 'new');
+  // A failed commit ends the window too.
+  cache.invalidate('app', 'a');
+  hooks[1]('before');
+  hooks[1]('rollback');
+  assert.equal(await cache.get('app:a', async () => 'kept'), 'kept');
+  assert.equal(cache.entries.get('app:a'), 'kept');
+});
+
+test('status checks for unknown channel names add no cache entries', async t => {
+  const app = await gateway(t);
+  const before = app.applications.cache.entries.size;
+  for (let n = 0; n < 50; n++) await app.applications.publicStatus('perch-mail', 'channel-' + n);
+  assert.ok(app.applications.cache.entries.size <= before + 2);
 });

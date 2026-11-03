@@ -156,10 +156,10 @@ export class Applications {
       else
         for (const kind of previous.kinds.filter(kind => !notifications.kinds.includes(kind))) {
           // Keep confirmed grants scoped as issued. Only the disabled kind's work is cancelled.
-          await cancelJobs(this.db, this.now(), 'CapabilityDisabled', 'app_id=? AND kind=?', [id, kind]);
           await this.db
             .prepare('DELETE FROM registrations WHERE app_id=? AND delivery_hash IS NULL AND kinds @> ?::jsonb')
             .run(id, JSON.stringify([kind]));
+          await cancelJobs(this.db, this.now(), 'CapabilityDisabled', 'app_id=? AND kind=?', [id, kind]);
         }
     });
     if (changed) this.channels.invalidate(id);
