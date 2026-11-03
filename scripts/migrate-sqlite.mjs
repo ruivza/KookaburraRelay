@@ -37,7 +37,7 @@ export async function migrate(source, db) {
     }
     await db.initialize();
     return await db.transaction(async () => {
-      await db.query('SELECT pg_advisory_xact_lock(72841101)');
+      await db.query('SELECT pg_advisory_xact_lock(hashtext(current_schema()), 72841101)');
       const locked = await db
         .prepare('SELECT pg_try_advisory_xact_lock(hashtext(current_schema()),72841102) locked')
         .get();

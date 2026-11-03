@@ -21,7 +21,7 @@ export class Applications {
       const perform = this[method].bind(this);
       this[method] = (...args) =>
         db.transaction(async () => {
-          await db.query('SELECT pg_advisory_xact_lock(72841104)');
+          await db.query('SELECT pg_advisory_xact_lock(hashtext(current_schema()), 72841104)');
           this.cache.writing();
           return perform(...args);
         });

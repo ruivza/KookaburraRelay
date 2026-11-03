@@ -110,7 +110,7 @@ export class Database {
   async initialize() {
     await this.exec(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`);
     await this.transaction(async () => {
-      await this.query('SELECT pg_advisory_xact_lock(72841101)');
+      await this.query('SELECT pg_advisory_xact_lock(hashtext(current_schema()), 72841101)');
       await this.exec('CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY)');
       const applied = new Set((await this.prepare('SELECT version FROM schema_migrations').all()).map(r => r.version));
       for (const { version, file } of migrations()) {

@@ -136,7 +136,7 @@ export class AccessControl {
     const settings = this.validate(input.settings);
     const credential = input.googleServiceAccount ? googleCredential(input.googleServiceAccount) : null;
     await this.db.transaction(async () => {
-      await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
+      await this.db.query('SELECT pg_advisory_xact_lock(hashtext(current_schema()), 72841104)');
       this.cache.writing();
       // Registrations for this application hold its row FOR SHARE while they commit.
       await this.db.prepare('SELECT 1 FROM applications WHERE id=? FOR UPDATE').get(appId);
@@ -174,7 +174,7 @@ export class AccessControl {
     )
       fail(400, 'Invalid server application');
     await this.db.transaction(async () => {
-      await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
+      await this.db.query('SELECT pg_advisory_xact_lock(hashtext(current_schema()), 72841104)');
       this.cache.writing();
       if ((await this.db.prepare('SELECT count(*) n FROM trusted_servers').get()).n >= 1000)
         fail(409, 'Server directory full');
@@ -192,7 +192,7 @@ export class AccessControl {
     if (!['approve', 'block', 'rotate'].includes(body.action)) fail(400, 'Invalid server action');
     const credential = body.action === 'block' ? null : randomSecret();
     await this.db.transaction(async () => {
-      await this.db.query('SELECT pg_advisory_xact_lock(72841104)');
+      await this.db.query('SELECT pg_advisory_xact_lock(hashtext(current_schema()), 72841104)');
       this.cache.writing();
       const row = await this.db.prepare('SELECT * FROM trusted_servers WHERE id=? FOR UPDATE').get(id);
       if (!row) fail(404, 'Server not found');
