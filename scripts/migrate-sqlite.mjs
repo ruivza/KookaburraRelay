@@ -42,7 +42,7 @@ export async function migrate(source, db) {
         .prepare('SELECT pg_try_advisory_xact_lock(hashtext(current_schema()),72841102) locked')
         .get();
       if (!locked.locked) throw Error('Stop the target gateway before migration');
-      if (await db.prepare('SELECT 1 FROM schema_migrations WHERE version>=2').get())
+      if (await db.prepare('SELECT 1 FROM schema_migrations WHERE version=2').get())
         throw Error('Target already initialized; refusing to overwrite');
       for (const table of [...tables, 'admin_security', 'admin_sessions'])
         if ((await db.prepare(`SELECT count(*) n FROM ${table}`).get()).n)
@@ -62,7 +62,7 @@ export async function migrate(source, db) {
         report.push({ table, rows: rows.length, verified: true });
       }
       await db.exec(
-        "SELECT setval(pg_get_serial_sequence('gateway_logs','id'),GREATEST(COALESCE((SELECT max(id) FROM gateway_logs),0),1),(SELECT count(*)>0 FROM gateway_logs)); INSERT INTO schema_migrations VALUES(2),(3)",
+        "SELECT setval(pg_get_serial_sequence('gateway_logs','id'),GREATEST(COALESCE((SELECT max(id) FROM gateway_logs),0),1),(SELECT count(*)>0 FROM gateway_logs)); INSERT INTO schema_migrations VALUES(2),(3) ON CONFLICT DO NOTHING",
       );
       return report;
     });

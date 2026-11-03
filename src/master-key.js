@@ -23,7 +23,7 @@ export async function loadEncryption(db, dataDir) {
   if (!existsSync(path)) {
     let initialized =
       !!check ||
-      !!(await db.prepare('SELECT 1 FROM schema_migrations WHERE version>=2').get()) ||
+      !!(await db.prepare('SELECT 1 FROM schema_migrations WHERE version=2').get()) ||
       !!(await db.prepare('SELECT 1 FROM admin_security').get());
     for (const [table, column] of encryptedColumns) {
       if (initialized) break;
