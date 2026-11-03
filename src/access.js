@@ -70,28 +70,6 @@ export class AccessControl {
     this.google = googleVerifier ?? new GoogleIntegrity({ now });
     this.verifying = 0;
   }
-  async initialize() {
-    await this.cleanup();
-    this.timer = setInterval(() => {
-      void this.cleanup().catch(() => {});
-    }, 60000).unref();
-  }
-  async cleanup() {
-    if (this.cleaning) return this.cleaning;
-    this.cleaning = (async () => {
-      for (const table of ['integrity_challenges', 'integrity_keys', 'server_tickets'])
-        await this.db.prepare(`DELETE FROM ${table} WHERE expires<=?`).run(this.now());
-    })();
-    try {
-      await this.cleaning;
-    } finally {
-      this.cleaning = null;
-    }
-  }
-  async close() {
-    clearInterval(this.timer);
-    await this.cleaning;
-  }
   async policy(appId) {
     if (!validID(appId) || !(await this.cache.application(appId))) fail(404, 'Application not found');
     const row = await this.cache.policy(appId);

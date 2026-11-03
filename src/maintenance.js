@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { fail } from './util.js';
+import { expireRegistrations } from './expiry.js';
 const DAY = 86400000;
 export const defaults = {
   enabled: true,
@@ -29,7 +30,7 @@ export class Maintenance {
     }
     return settings;
   }
-  async initialize(autoStart) {
+  async initialize() {
     await this.db
       .prepare('INSERT INTO maintenance_settings VALUES(1,?,?) ON CONFLICT DO NOTHING')
       .run(JSON.stringify(defaults), this.now() + defaults.intervalHours * 3600000);
@@ -38,10 +39,6 @@ export class Maintenance {
         "UPDATE maintenance_runs SET status='failed',finished=?,error='Interrupted by restart' WHERE status='running'",
       )
       .run(this.now());
-    if (autoStart)
-      this.timer = setInterval(() => {
-        void this.tick().catch(() => console.error('Maintenance scheduler failed'));
-      }, 60000).unref();
   }
   async state() {
     const row = await this.db.prepare('SELECT * FROM maintenance_settings WHERE id=1').get();
@@ -168,14 +165,20 @@ export class Maintenance {
             partial = true;
             break;
           }
-          const result = await this.db
-            .prepare(
-              `WITH batch AS (SELECT ctid FROM ${p.table} WHERE ${p.where} LIMIT 1000 FOR UPDATE SKIP LOCKED) DELETE FROM ${p.table} WHERE ctid IN (SELECT ctid FROM batch)`,
-            )
-            .run(...p.values);
-          deleted[p.kind] += result.changes;
+          // Expired registrations leave together with their work, as everywhere else they expire.
+          const changes =
+            p.table === 'registrations'
+              ? await expireRegistrations(this.db, p.values[0])
+              : (
+                  await this.db
+                    .prepare(
+                      `WITH batch AS (SELECT ctid FROM ${p.table} WHERE ${p.where} LIMIT 1000 FOR UPDATE SKIP LOCKED) DELETE FROM ${p.table} WHERE ctid IN (SELECT ctid FROM batch)`,
+                    )
+                    .run(...p.values)
+                ).changes;
+          deleted[p.kind] += changes;
           await this.db.prepare('UPDATE maintenance_runs SET deleted=? WHERE id=?').run(JSON.stringify(deleted), id);
-          if (result.changes < 1000) break;
+          if (changes < 1000) break;
           if (i === 199) partial = true;
           await new Promise(resolve => setTimeout(resolve, 20));
         }
@@ -205,7 +208,6 @@ export class Maintenance {
   }
   async close() {
     this.stopping = true;
-    clearInterval(this.timer);
     await this.work;
   }
 }

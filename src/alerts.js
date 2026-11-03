@@ -86,16 +86,10 @@ export class Alerts {
   constructor({ db, seal, open, abuse, monitor, now = Date.now, sender = sendWebhook }) {
     Object.assign(this, { db, seal, open, abuse, monitor, now, sender });
   }
-  async initialize(autoStart = true) {
+  async initialize() {
     await this.db
       .prepare('INSERT INTO alert_settings VALUES(1,?,NULL,?) ON CONFLICT DO NOTHING')
       .run(JSON.stringify(alertDefaults), randomUUID());
-    if (autoStart)
-      this.timer = setInterval(() => {
-        void this.tick().catch(() => {
-          this.workerFailed = true;
-        });
-      }, 60000).unref();
   }
   async row() {
     return this.db.prepare('SELECT * FROM alert_settings WHERE id=1').get();
@@ -240,7 +234,6 @@ export class Alerts {
     }
   }
   async close() {
-    clearInterval(this.timer);
     await this.running;
   }
 }

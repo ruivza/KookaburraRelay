@@ -86,7 +86,7 @@ States are `queued`, `sending`, `retrying`, `accepted`, `failed`, `unknown`, and
 
 ## Monitoring and retention
 
-`/healthz` checks the process and PostgreSQL, not provider delivery. `/metrics` requires the separate `monitor.token`. It exposes queue, process, delivery, sampling, and backup metrics. Vendor acceptance rates exclude waiting, cancelled, and retrying jobs.
+`/healthz` checks the process and PostgreSQL, not provider delivery. `/metrics` requires the separate `monitor.token`. It exposes queue, process, delivery, sampling, and backup metrics, and for each periodic job (abuse and expiry cleanup, alerts, maintenance, monitor sampling) its failures since start and last success. Vendor acceptance rates exclude waiting, cancelled, and retrying jobs.
 
 Run `scripts/uptime-probe.mjs` from the repository root on a separate Node.js 24+ host to monitor outages:
 

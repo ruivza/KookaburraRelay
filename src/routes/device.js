@@ -3,7 +3,7 @@ import { defaultApp } from '../applications.js';
 import { requestedKinds } from '../notification.js';
 import { channelCatalog } from '../channels.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { confirmReplay } from '../abuse.js';
+import { confirmReplay } from '../expiry.js';
 import { validateRegistration } from '../access.js';
 import { fail, isToken43, randomSecret, sha256Hex } from '../util.js';
 export function deviceRoutes({ applications, db, queue, now, limit, seal, open, bearer, device, abuse, access }) {

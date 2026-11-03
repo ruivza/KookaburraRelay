@@ -11,16 +11,9 @@ export class Observability {
     this.errors = 0;
     this.elapsed = 0;
   }
-  async initialize(autoStart = true) {
+  async initialize() {
     const { db, now } = this;
     await db.prepare('INSERT INTO gateway_runs VALUES(?,?,?,NULL)').run(this.runId, now(), now());
-    if (autoStart)
-      this.timer = setInterval(() => {
-        void this.sample().catch(() => {
-          this.sampleFailures++;
-          console.error('Gateway monitoring sample failed');
-        });
-      }, 60000).unref();
     await this.sample();
   }
   async record({ kind, action, appId = '', channel = '', status = 200, duration = 0, requestId = randomUUID() }) {
@@ -203,7 +196,6 @@ export class Observability {
     };
   }
   async close() {
-    clearInterval(this.timer);
     await this.sampling?.catch(() => {});
     await this.db
       .prepare('UPDATE gateway_runs SET heartbeat=?,stopped=? WHERE id=?')

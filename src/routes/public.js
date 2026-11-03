@@ -16,7 +16,7 @@ export const gauges = metrics =>
     .join('');
 const attention = status => +!['ok', 'disabled'].includes(status);
 
-export function publicRoutes({ applications, access, monitor, backups, bearer }) {
+export function publicRoutes({ applications, access, monitor, backups, scheduler, bearer }) {
   return [
     route('GET', '/v1/access', {}, async ({ query }) => ({
       value: await access.publicPolicy(query.get('appId') || defaultApp),
@@ -76,6 +76,15 @@ export function publicRoutes({ applications, access, monitor, backups, bearer })
               ['{state="accepted"}', v.counts.accepted],
               ['{state="failed_or_unknown"}', v.counts.failed],
             ],
+          ],
+          [
+            'perch_gateway_job_failures',
+            scheduler.status().map(job => ['{job="' + job.name + '"}', job.failures]),
+            'Failed runs of a periodic job since start',
+          ],
+          [
+            'perch_gateway_job_last_success_seconds',
+            scheduler.status().map(job => ['{job="' + job.name + '"}', (job.lastSuccess ?? 0) / 1000]),
           ],
         ]),
       );

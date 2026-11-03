@@ -19,6 +19,7 @@ import { Observability } from './observability.js';
 import { AbuseProtection } from './abuse.js';
 import { RateLimiter } from './rate-limit.js';
 import { ConfigCache } from './config-cache.js';
+import { Scheduler } from './scheduler.js';
 import { fail, isToken43, randomSecret, sha256Hex } from './util.js';
 import { match, routeName } from './router.js';
 import { publicRoutes } from './routes/public.js';
@@ -90,7 +91,7 @@ export async function createGateway({
   const consoleFiles = loadConsole();
   const addressFor = clientAddressResolver(trustedProxies);
   const db = new Database(databaseUrl, databaseSchema, { poolSize: databasePoolSize });
-  let owner, applications, queue, monitor, maintenance, server, abuse, access, alerts;
+  let owner, applications, queue, monitor, maintenance, server, abuse, access, alerts, scheduler;
   let ownershipLost = false,
     initialized = false,
     shutdown;
@@ -105,9 +106,9 @@ export async function createGateway({
     let timer;
     const cleanup = async () => {
       try {
+        await scheduler?.close();
         await maintenance?.close();
         await alerts?.close();
-        await access?.close();
         await abuse?.close();
         await queue?.close();
         await closed;
@@ -182,7 +183,6 @@ export async function createGateway({
     abuse = new AbuseProtection({ db, now, cache });
     await abuse.initialize();
     access = new AccessControl({ db, seal, open, now, abuse, appleVerifier, googleVerifier, cache });
-    await access.initialize();
     queue = new DeliveryQueue({
       db,
       applications,
@@ -195,11 +195,24 @@ export async function createGateway({
       concurrency: deliveryWorkers,
     });
     monitor = new Observability({ db, now, queue, backups });
-    await monitor.initialize(autoStart);
+    await monitor.initialize();
     alerts = new Alerts({ db, seal, open, abuse, monitor, now, sender: alertSender });
-    await alerts.initialize(autoStart);
+    await alerts.initialize();
     maintenance = new Maintenance({ db, now, runId: monitor.runId });
-    await maintenance.initialize(autoStart);
+    await maintenance.initialize();
+    // The abuse cleanup job also applies every expiry rule in src/expiry.js.
+    scheduler = new Scheduler()
+      .every('abuse-cleanup', 60000, () => abuse.cleanup(), { onError: () => abuse.cleanupFailures++ })
+      .every('alerts', 60000, () => alerts.tick(), { onError: () => (alerts.workerFailed = true) })
+      .every('maintenance', 60000, () => maintenance.tick(), {
+        onError: () => console.error('Maintenance scheduler failed'),
+      })
+      .every('monitor-sample', 60000, () => monitor.sample(), {
+        onError: () => {
+          monitor.sampleFailures++;
+          console.error('Gateway monitoring sample failed');
+        },
+      });
     await db
       .prepare(
         "UPDATE delivery_jobs SET state='unknown',notification=NULL,reason='Interrupted',updated=? WHERE state='sending' OR (mode='legacy' AND state='queued')",
@@ -261,6 +274,7 @@ export async function createGateway({
       abuse,
       access,
       alerts,
+      scheduler,
       now,
       limit,
       seal,
@@ -399,7 +413,10 @@ export async function createGateway({
     server.headersTimeout = 10000;
     if (ownershipLost) throw Error('Database ownership lost during startup');
     initialized = true;
-    if (autoStart) queue.start();
+    if (autoStart) {
+      queue.start();
+      scheduler.start();
+    }
     return {
       server,
       db,
@@ -414,6 +431,7 @@ export async function createGateway({
       abuse,
       access,
       alerts,
+      scheduler,
       rateLimits,
       routes,
       close,
