@@ -38,6 +38,19 @@ const errorCode = error => {
   const code = String(error?.code ?? error?.name ?? 'Error');
   return /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? code : 'Error';
 };
+// Prometheus text for [name, value or [[labels, value], ...], help?] gauges.
+const gauges = metrics =>
+  metrics
+    .map(
+      ([name, samples, help]) =>
+        (help ? `# HELP ${name} ${help}\n` : '') +
+        `# TYPE ${name} gauge\n` +
+        (Array.isArray(samples) ? samples : [['', samples]])
+          .map(([labels, value]) => `${name}${labels} ${value}\n`)
+          .join(''),
+    )
+    .join('');
+const attention = status => +!['ok', 'disabled'].includes(status);
 
 export async function createGateway({
   databaseUrl = process.env.GATEWAY_DATABASE_URL,
@@ -449,11 +462,40 @@ export async function createGateway({
           const v = await monitor.overview();
           const q = await monitor.queueStatus(),
             b = await backups.summary();
-          const operational = `# TYPE perch_gateway_queue_oldest_wait_seconds gauge\nperch_gateway_queue_oldest_wait_seconds ${q.oldestWaitSeconds}\n# TYPE perch_gateway_queue_overdue gauge\nperch_gateway_queue_overdue ${q.overdue}\n# TYPE perch_gateway_sending_stuck gauge\nperch_gateway_sending_stuck ${q.stuck}\n# TYPE perch_gateway_worker_error gauge\nperch_gateway_worker_error ${+q.workerError}\n# TYPE perch_gateway_monitor_last_sample_seconds gauge\nperch_gateway_monitor_last_sample_seconds ${(monitor.lastSampleAt ?? 0) / 1000}\n# TYPE perch_gateway_backup_worker_online gauge\nperch_gateway_backup_worker_online ${+b.workerOnline}\n# TYPE perch_gateway_backup_last_success_seconds gauge\nperch_gateway_backup_last_success_seconds{target="local"} ${(b.local.lastSuccess ?? 0) / 1000}\nperch_gateway_backup_last_success_seconds{target="remote"} ${(b.remote.lastSuccess ?? 0) / 1000}\n# TYPE perch_gateway_backup_attention gauge\nperch_gateway_backup_attention{target="local"} ${+!['ok', 'disabled'].includes(b.local.status)}\nperch_gateway_backup_attention{target="remote"} ${+!['ok', 'disabled'].includes(b.remote.status)}\n`;
           res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4', 'Cache-Control': 'no-store' });
           return res.end(
-            operational +
-              `# HELP perch_gateway_uptime_seconds Current process uptime\n# TYPE perch_gateway_uptime_seconds gauge\nperch_gateway_uptime_seconds ${v.uptime / 1000}\n# TYPE perch_gateway_queue_depth gauge\nperch_gateway_queue_depth ${v.queue}\n# TYPE perch_gateway_memory_bytes gauge\nperch_gateway_memory_bytes ${v.memory.rss}\n# TYPE perch_gateway_tasks_24h gauge\nperch_gateway_tasks_24h{state="accepted"} ${v.counts.accepted}\nperch_gateway_tasks_24h{state="failed_or_unknown"} ${v.counts.failed}\n`,
+            gauges([
+              ['perch_gateway_queue_oldest_wait_seconds', q.oldestWaitSeconds],
+              ['perch_gateway_queue_overdue', q.overdue],
+              ['perch_gateway_sending_stuck', q.stuck],
+              ['perch_gateway_worker_error', +q.workerError],
+              ['perch_gateway_monitor_last_sample_seconds', (monitor.lastSampleAt ?? 0) / 1000],
+              ['perch_gateway_backup_worker_online', +b.workerOnline],
+              [
+                'perch_gateway_backup_last_success_seconds',
+                [
+                  ['{target="local"}', (b.local.lastSuccess ?? 0) / 1000],
+                  ['{target="remote"}', (b.remote.lastSuccess ?? 0) / 1000],
+                ],
+              ],
+              [
+                'perch_gateway_backup_attention',
+                [
+                  ['{target="local"}', attention(b.local.status)],
+                  ['{target="remote"}', attention(b.remote.status)],
+                ],
+              ],
+              ['perch_gateway_uptime_seconds', v.uptime / 1000, 'Current process uptime'],
+              ['perch_gateway_queue_depth', v.queue],
+              ['perch_gateway_memory_bytes', v.memory.rss],
+              [
+                'perch_gateway_tasks_24h',
+                [
+                  ['{state="accepted"}', v.counts.accepted],
+                  ['{state="failed_or_unknown"}', v.counts.failed],
+                ],
+              ],
+            ]),
           );
         }
         if (path === '/monitor/report' && req.method === 'POST') return send(200, await monitor.report(body));
