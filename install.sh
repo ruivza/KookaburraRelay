@@ -18,6 +18,8 @@ if [ -n "$configured_image" ]; then
 else
   docker compose up -d --build --wait
 fi
-printf '\nKookaburra Relay is ready. Default URL: http://127.0.0.1:3220\n'
+bind=$(sed -n 's/^GATEWAY_BIND=//p' .env | tail -n 1)
+port=$(sed -n 's/^GATEWAY_PORT=//p' .env | tail -n 1)
+printf '\nKookaburra Relay is ready: http://%s:%s\n' "${bind:-127.0.0.1}" "${port:-3220}"
 printf 'Read the initial admin token locally: docker compose exec gateway cat /app/data/admin.token\n'
 printf 'Keep both named volumes; docker compose down -v permanently deletes data.\n'
