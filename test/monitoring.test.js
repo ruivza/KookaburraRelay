@@ -35,9 +35,13 @@ test('business monitoring separates outcomes, old queued work, scheduled retries
     });
     assert.equal(metrics.status, 200);
     const text = await metrics.text();
-    assert.match(text, /perch_gateway_queue_overdue 1/);
-    assert.match(text, /perch_gateway_sending_stuck 1/);
-    assert.match(text, /perch_gateway_backup_attention\{target="remote"\} 0/);
+    assert.match(text, /^relay_gateway_queue_overdue 1$/m);
+    assert.match(text, /^relay_gateway_sending_stuck 1$/m);
+    assert.match(text, /^relay_gateway_backup_attention\{target="remote"\} 0$/m);
+    assert.match(text, /^relay_gateway_job_failures\{job="abuse-cleanup"\} 0$/m);
+    // The old names stay for one release, marked deprecated.
+    assert.match(text, /^perch_gateway_queue_overdue 1$/m);
+    assert.match(text, /^# HELP perch_gateway_queue_overdue Deprecated alias of relay_gateway_queue_overdue/m);
     const row = await app.backups.row();
     await app.db
       .prepare(

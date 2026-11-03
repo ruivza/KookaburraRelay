@@ -45,49 +45,54 @@ export function publicRoutes({ applications, access, monitor, backups, scheduler
       const q = await monitor.queueStatus(),
         b = await backups.summary();
       res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4', 'Cache-Control': 'no-store' });
-      res.end(
-        gauges([
-          ['perch_gateway_queue_oldest_wait_seconds', q.oldestWaitSeconds],
-          ['perch_gateway_queue_overdue', q.overdue],
-          ['perch_gateway_sending_stuck', q.stuck],
-          ['perch_gateway_worker_error', +q.workerError],
-          ['perch_gateway_monitor_last_sample_seconds', (monitor.lastSampleAt ?? 0) / 1000],
-          ['perch_gateway_backup_worker_online', +b.workerOnline],
+      const metrics = [
+        ['relay_gateway_queue_oldest_wait_seconds', q.oldestWaitSeconds],
+        ['relay_gateway_queue_overdue', q.overdue],
+        ['relay_gateway_sending_stuck', q.stuck],
+        ['relay_gateway_worker_error', +q.workerError],
+        ['relay_gateway_monitor_last_sample_seconds', (monitor.lastSampleAt ?? 0) / 1000],
+        ['relay_gateway_backup_worker_online', +b.workerOnline],
+        [
+          'relay_gateway_backup_last_success_seconds',
           [
-            'perch_gateway_backup_last_success_seconds',
-            [
-              ['{target="local"}', (b.local.lastSuccess ?? 0) / 1000],
-              ['{target="remote"}', (b.remote.lastSuccess ?? 0) / 1000],
-            ],
+            ['{target="local"}', (b.local.lastSuccess ?? 0) / 1000],
+            ['{target="remote"}', (b.remote.lastSuccess ?? 0) / 1000],
           ],
+        ],
+        [
+          'relay_gateway_backup_attention',
           [
-            'perch_gateway_backup_attention',
-            [
-              ['{target="local"}', attention(b.local.status)],
-              ['{target="remote"}', attention(b.remote.status)],
-            ],
+            ['{target="local"}', attention(b.local.status)],
+            ['{target="remote"}', attention(b.remote.status)],
           ],
-          ['perch_gateway_uptime_seconds', v.uptime / 1000, 'Current process uptime'],
-          ['perch_gateway_queue_depth', v.queue],
-          ['perch_gateway_memory_bytes', v.memory.rss],
+        ],
+        ['relay_gateway_uptime_seconds', v.uptime / 1000, 'Current process uptime'],
+        ['relay_gateway_queue_depth', v.queue],
+        ['relay_gateway_memory_bytes', v.memory.rss],
+        [
+          'relay_gateway_tasks_24h',
           [
-            'perch_gateway_tasks_24h',
-            [
-              ['{state="accepted"}', v.counts.accepted],
-              ['{state="failed_or_unknown"}', v.counts.failed],
-            ],
+            ['{state="accepted"}', v.counts.accepted],
+            ['{state="failed_or_unknown"}', v.counts.failed],
           ],
-          [
-            'perch_gateway_job_failures',
-            scheduler.status().map(job => ['{job="' + job.name + '"}', job.failures]),
-            'Failed runs of a periodic job since start',
-          ],
-          [
-            'perch_gateway_job_last_success_seconds',
-            scheduler.status().map(job => ['{job="' + job.name + '"}', (job.lastSuccess ?? 0) / 1000]),
-          ],
-        ]),
-      );
+        ],
+        [
+          'relay_gateway_job_failures',
+          scheduler.status().map(job => ['{job="' + job.name + '"}', job.failures]),
+          'Failed runs of a periodic job since start',
+        ],
+        [
+          'relay_gateway_job_last_success_seconds',
+          scheduler.status().map(job => ['{job="' + job.name + '"}', (job.lastSuccess ?? 0) / 1000]),
+        ],
+      ];
+      // 0.3.0 renamed perch_gateway_* to relay_gateway_*; the old names are still served for one release.
+      const aliases = metrics.map(([name, samples]) => [
+        name.replace(/^relay_/, 'perch_'),
+        samples,
+        'Deprecated alias of ' + name + ', removed in the next release',
+      ]);
+      res.end(gauges([...metrics, ...aliases]));
     }),
     route('POST', '/monitor/report', { auth: 'monitor' }, async ({ body }) => ({
       value: await monitor.report(body),
