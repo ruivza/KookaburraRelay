@@ -265,6 +265,7 @@ test('public status reads configuration without decrypting secrets or scanning d
     const ios = await status();
     assert.deepEqual(ios, {
       protocol: 1,
+      protocols: [1, 2],
       appId: 'perch-mail',
       ready: true,
       notificationEncryption: 'p256-hkdf-sha256-aes256gcm-v1',
@@ -272,6 +273,7 @@ test('public status reads configuration without decrypting secrets or scanning d
     });
     assert.deepEqual(await status('fcm'), {
       protocol: 1,
+      protocols: [1, 2],
       appId: 'perch-mail',
       ready: true,
       notificationEncryption: null,
@@ -279,6 +281,7 @@ test('public status reads configuration without decrypting secrets or scanning d
     });
     assert.deepEqual(await status('unimplemented'), {
       protocol: 1,
+      protocols: [1, 2],
       appId: 'perch-mail',
       ready: false,
       notificationEncryption: null,

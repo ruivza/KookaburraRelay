@@ -1,3 +1,4 @@
+import { S3Storage } from '../src/s3-storage.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
@@ -8,7 +9,6 @@ import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createGateway } from './helpers.mjs';
 import { BackupWorker } from '../src/backup-worker.js';
-import { B2Storage } from '../src/b2-storage.js';
 import { validateRecipient, encryptFile } from '../src/backup-crypto.js';
 import { totp } from '../src/security.js';
 const exec = promisify(execFile),
@@ -380,7 +380,7 @@ test('B2 upload uses checksums and recognizes an already accepted object after a
       },
       destroy() {},
     };
-    const b2 = new B2Storage(f.settings, 'secret', { client });
+    const b2 = new S3Storage(f.settings, 'secret', { client });
     await assert.rejects(b2.upload(file, 'relay-test/job.age'));
     assert.equal((await b2.upload(file, 'relay-test/job.age')).bytes, (await stat(file)).size);
     assert.equal(puts, 1);
@@ -419,7 +419,7 @@ test('real S3 SDK signs B2 requests and sends encrypted bytes with an explicit M
     await writeFile(file, 'encrypted wire fixture');
     let stored,
       puts = 0;
-    const storage = new B2Storage(f.settings, 'fixture-secret', {
+    const storage = new S3Storage(f.settings, 'fixture-secret', {
       requestHandler: {
         async handle(request) {
           assert.equal(request.hostname, 's3.us-west-004.backblazeb2.com');

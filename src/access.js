@@ -17,10 +17,14 @@ export const accessDefaults = Object.freeze({
   cloudProjectNumber: '',
 });
 // Field checks shared by registration and its integrity challenge. APNs tokens are compared lowercased.
+// Protocol 2 registrations name their application; protocol 1 may omit it for the default application.
 export function validateRegistration(body) {
   const appId = body.appId ?? defaultApp,
-    channel = body.channel ?? 'apns';
+    channel = body.channel ?? 'apns',
+    protocol = body.protocol ?? 1;
   if (
+    ![1, 2].includes(protocol) ||
+    (protocol === 2 && body.appId === undefined) ||
     !validID(appId) ||
     !validID(body.deviceId) ||
     !validID(body.serverId) ||
@@ -31,7 +35,12 @@ export function validateRegistration(body) {
     !(channel === 'apns' ? /^[a-f0-9]{32,512}$/i : /^[A-Za-z0-9_:.-]{20,4096}$/).test(body.deviceToken)
   )
     fail(400, 'Invalid registration');
-  return { appId, channel, deviceToken: channel === 'apns' ? body.deviceToken.toLowerCase() : body.deviceToken };
+  return {
+    appId,
+    channel,
+    protocol,
+    deviceToken: channel === 'apns' ? body.deviceToken.toLowerCase() : body.deviceToken,
+  };
 }
 export function registrationBinding(body) {
   const { appId, channel, deviceToken } = validateRegistration(body),
@@ -149,8 +158,9 @@ export class AccessControl {
         )
         .run(appId, JSON.stringify(settings), randomUUID(), encrypted);
       this.cache.invalidate('policy', appId);
-      await cancelJobs(this.db, this.now(), 'AccessPolicyChanged', 'app_id=?', [appId]);
+      // Registrations before their jobs, the lock order every path keeps.
       await this.db.prepare('DELETE FROM registrations WHERE app_id=?').run(appId);
+      await cancelJobs(this.db, this.now(), 'AccessPolicyChanged', 'app_id=?', [appId]);
       await this.db.prepare('DELETE FROM integrity_keys WHERE app_id=?').run(appId);
       await this.db.prepare('DELETE FROM integrity_challenges WHERE app_id=?').run(appId);
     });
@@ -399,7 +409,9 @@ export class AccessControl {
   }
   async commitRegistration(body, grant) {
     if ((await this.policy(body.appId ?? defaultApp)).revision !== grant.revision) fail(409, 'Access policy changed');
-    const row = await this.cache.server(body.serverId);
+    // Read under a share lock, not from the cache: blocking or rotating the server takes its row FOR UPDATE and
+    // then deletes its registrations, so it either waits for this registration to commit or is seen by it.
+    const row = await this.db.prepare('SELECT * FROM trusted_servers WHERE id=? FOR SHARE').get(body.serverId);
     if (
       row?.state === 'blocked' ||
       (grant.server && (!row || row.state !== 'approved' || row.revision !== grant.server.revision))

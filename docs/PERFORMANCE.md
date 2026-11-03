@@ -43,6 +43,30 @@ The JSON report goes to stdout (or `--out file.json`), progress and a short summ
 
 Database round-trip counts are deterministic for a given workload: they varied by less than 0.1 across every baseline run. Compare them directly; any change should be explained by the statement breakdown. Throughput and latency are not: on the baseline machine they varied by a factor of two or more between identical runs. Compare the median of at least three runs on the same machine against the median below, and treat differences inside the baseline range as noise.
 
+## After the refactor: v0.3.0
+
+Branch `refactor/phase5-breaking` at `38b979e`, recorded 2026-11-03 on the same machine as the baseline, three runs with fresh containers and the same command and defaults. The gateway now has 20 pool connections and 32 delivery workers (the 0.2.0 defaults). Median of the three runs, with the range, and the baseline median for comparison:
+
+| Metric | `concurrent` | `phased` | Baseline `concurrent` / `phased` |
+| --- | --- | --- | --- |
+| HTTP throughput, req/s | 172.7 (170.4–178.2) | 217.2 (208.2–221.1) | 80.7 / 89.2 |
+| Latency p50, ms | 141 (137–142) | 90 (89–95) | 356 / 349 |
+| Latency p90, ms | 346 (336–353) | 310 (299–326) | 552 / 423 |
+| Latency p99, ms | 642 (608–676) | 636 (577–741) | 614 / 673 |
+| HTTP statuses | 202 for all 2000, every run | 202 for all 2000, every run | same |
+| First enqueue to all 2000 accepted, s | 14.4 (14.0–14.8) | n/a | 57.0 |
+| Queue drain after load, s | n/a | 6.5 (6.5–6.6) | 35.4 |
+| Deliveries accepted/s | 139.1 (134.8–142.4) | 305.7 (302.6–306.7) | 35.1 / 56.5 |
+| DB round-trips per `/v1/jobs` request | n/a | 8.07 (all runs) | 39.25 |
+| DB round-trips per delivery | n/a | 5.73 (5.73–5.76) | 24.96 |
+| DB round-trips per job, request and delivery | 13.54 (13.51–13.55) | n/a | 64.2 |
+
+- **Round trips.** A warm send is 8 statements plus a sampled audit row, a delivery 5 plus the worker's share of polling; `test/round-trips.test.js` fails above 12 and 6.
+- **Throughput and median latency.** Requests no longer serialize on global locks, so throughput is 2.1–2.4 times the baseline and p50 latency 2.5–3.9 times lower at the same client concurrency.
+- **Delivery.** With 32 workers and a 50 ms provider the ceiling is 640 deliveries per second; the drain reached 306/s. During load, deliveries share the pool with requests and reached 139/s.
+- **Not improved: p99.** The slowest 1% still takes about 640 ms, as before; the tail was not investigated.
+- **Next limit: global admission.** At more than 200 req/s, a sustained load would reach the 6,000-requests-per-minute global admission limit (`request_global`) within 30 seconds. The 2000-job runs stay below it.
+
 ## Baseline: v0.1.2
 
 Gateway source as on `main` at `faf95b6` (the run reports `faf95b6-dirty` because the bench files were not yet committed; `src/` was unmodified). Recorded 2026-11-02, 13:59–14:16 UTC.

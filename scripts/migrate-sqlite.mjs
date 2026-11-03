@@ -35,29 +35,47 @@ export async function migrate(source, db) {
         throw Error('Source schema must first be upgraded: missing ' + table);
       snapshot[table] = sqlite.prepare(`SELECT * FROM ${table}`).all();
     }
-    await db.initialize();
+    await db.ensureSchema();
     return await db.transaction(async () => {
       await db.query('SELECT pg_advisory_xact_lock(hashtext(current_schema()), 72841101)');
       const locked = await db
         .prepare('SELECT pg_try_advisory_xact_lock(hashtext(current_schema()),72841102) locked')
         .get();
       if (!locked.locked) throw Error('Stop the target gateway before migration');
+      // Migrations only after the ownership check, so a running gateway's schema is never changed under it.
+      await db.initialize();
       if (await db.prepare('SELECT 1 FROM schema_migrations WHERE version=2').get())
         throw Error('Target already initialized; refusing to overwrite');
-      for (const table of [...tables, 'admin_security', 'admin_sessions'])
+      const target = new Map();
+      for (const { table_name, column_name } of await db
+        .prepare('SELECT table_name,column_name FROM information_schema.columns WHERE table_schema=current_schema()')
+        .all())
+        target.set(table_name, [...(target.get(table_name) ?? []), column_name]);
+      // Only what later releases dropped on purpose is left behind; anything else the target lacks stops the import.
+      const retired = { configuration: [], limits: [], applications: ['secret'] };
+      for (const table of tables) {
+        if (!target.has(table) && !(table in retired && !retired[table].length))
+          throw Error('Target lacks table ' + table);
+        for (const column of snapshot[table].length ? Object.keys(snapshot[table][0]) : [])
+          if (target.has(table) && !target.get(table).includes(column) && !retired[table]?.includes(column))
+            throw Error('Target lacks column ' + table + '.' + column);
+      }
+      const importing = tables.filter(table => target.has(table));
+      for (const table of [...importing, 'admin_security', 'admin_sessions'])
         if ((await db.prepare(`SELECT count(*) n FROM ${table}`).get()).n)
           throw Error('Target must be empty: ' + table);
       const report = [];
-      for (const table of tables) {
-        const rows = snapshot[table];
-        for (const row of rows) {
-          const cols = Object.keys(row);
-          if (cols.some(c => !/^\w+$/.test(c))) throw Error('Invalid source column');
+      for (const table of importing) {
+        const sourceColumns = snapshot[table].length ? Object.keys(snapshot[table][0]) : [];
+        if (sourceColumns.some(c => !/^\w+$/.test(c))) throw Error('Invalid source column');
+        const cols = sourceColumns.filter(c => target.get(table).includes(c));
+        const pick = row => Object.fromEntries(cols.map(c => [c, row[c]]));
+        const rows = snapshot[table].map(pick);
+        for (const row of rows)
           await db
             .prepare(`INSERT INTO ${table} (${cols.join(',')}) VALUES(${cols.map(() => '?').join(',')})`)
             .run(...Object.values(row));
-        }
-        const imported = await db.prepare(`SELECT * FROM ${table}`).all();
+        const imported = (await db.prepare(`SELECT * FROM ${table}`).all()).map(pick);
         if (checksum(rows) !== checksum(imported)) throw Error('Migration verification failed: ' + table);
         report.push({ table, rows: rows.length, verified: true });
       }

@@ -154,13 +154,14 @@ test('configuration encrypts the Apple key and never returns it', async () => {
       }),
     });
     assert.equal(response.status, 200);
-    const stored = await app.db
-      .prepare(
-        "SELECT a.secret duplicate, c.secret FROM applications a JOIN app_channels c ON c.app_id=a.id AND c.kind='apns' WHERE a.id='perch-mail'",
-      )
-      .get();
-    assert.equal(stored.duplicate, null);
+    const stored = await app.db.prepare("SELECT * FROM app_channels WHERE app_id='perch-mail' AND kind='apns'").get();
     assert.ok(!stored.secret.includes('PRIVATE KEY'));
+    // Only the key is sealed; identifiers are plain columns and the application row holds no copy.
+    assert.equal(stored.topic, 'com.perchmail.app');
+    assert.deepEqual(
+      Object.keys(await app.db.prepare("SELECT * FROM applications WHERE id='perch-mail'").get()).sort(),
+      ['enabled', 'id', 'name', 'revision'],
+    );
     const config = (await (await fetch(url.replace('/perch-mail', ''), { headers })).json()).applications[0];
     assert.equal(config.ready, true);
     assert.equal(config.apns.hasKey, true);

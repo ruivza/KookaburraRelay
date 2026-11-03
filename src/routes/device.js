@@ -18,7 +18,7 @@ export function deviceRoutes({ applications, db, queue, now, limit, seal, open, 
       if (!channelCatalog.some(c => c.id === channel && c.platform === (body.platform ?? 'ios') && c.implemented))
         fail(501, 'Push channel not implemented');
       req.gatewayScope = { appId, channel };
-      const { deviceToken: normalizedToken } = validateRegistration(body);
+      const { deviceToken: normalizedToken, protocol } = validateRegistration(body);
       // Unknown applications must not create rate-limit rows.
       await applications.row(appId);
       const release = abuse.reserveChallenge();
@@ -48,8 +48,8 @@ export function deviceRoutes({ applications, db, queue, now, limit, seal, open, 
           await abuse.registration(appId);
           await db
             .prepare(
-              `INSERT INTO registrations(id,device_id,server_id,token,token_hash,environment,nonce,challenge_hash,expires,app_id,channel,app_revision,purpose,kinds,trusted_server)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?)`,
+              `INSERT INTO registrations(id,device_id,server_id,token,token_hash,environment,nonce,challenge_hash,expires,app_id,channel,app_revision,purpose,kinds,trusted_server,protocol)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,?)`,
             )
             .run(
               id,
@@ -67,6 +67,7 @@ export function deviceRoutes({ applications, db, queue, now, limit, seal, open, 
               purpose,
               JSON.stringify(kinds),
               accessGrant.server?.id ?? null,
+              protocol,
             );
         });
         const result = await route.adapter.send(
@@ -74,6 +75,7 @@ export function deviceRoutes({ applications, db, queue, now, limit, seal, open, 
             device_id: body.deviceId,
             environment: body.environment,
             app_id: appId,
+            protocol,
           },
           body.deviceToken,
           {
@@ -158,7 +160,8 @@ export function deviceRoutes({ applications, db, queue, now, limit, seal, open, 
           };
           await db.transaction(async () => {
             for (const old of await db
-              .prepare('SELECT id FROM registrations WHERE token_hash=? AND id<>?')
+              // Registration rows before their jobs, the lock order every path keeps.
+              .prepare('SELECT id FROM registrations WHERE token_hash=? AND id<>? FOR UPDATE')
               .all(entry.token_hash, entry.id))
               await queue.cancelRegistration(old.id);
             await db.prepare('DELETE FROM registrations WHERE token_hash=? AND id<>?').run(entry.token_hash, entry.id);

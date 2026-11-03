@@ -6,8 +6,6 @@ const encryptedColumns = [
   ['access_policies', 'google_secret'],
   ['alert_settings', 'secret'],
   ['backup_settings', 'secret'],
-  ['configuration', 'secret'],
-  ['applications', 'secret'],
   ['app_channels', 'secret'],
   ['registrations', 'token'],
   ['registrations', 'credentials'],

@@ -26,8 +26,6 @@ export async function cleanupExpired(db, now) {
   await db.prepare('DELETE FROM abuse_quotas WHERE expires<=?').run(now);
   for (const table of ['integrity_challenges', 'integrity_keys', 'server_tickets'])
     await db.prepare(`DELETE FROM ${table} WHERE expires<=?`).run(now);
-  // Rows left by versions that counted rate limits in PostgreSQL.
-  await db.prepare('DELETE FROM limits WHERE start<?').run(now - 3600000);
   // Rows confirmed before confirmed_at existed have no retry window left.
   await db
     .prepare(

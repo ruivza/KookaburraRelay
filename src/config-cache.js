@@ -17,6 +17,8 @@ export class ConfigCache {
     Object.assign(this, { db, capacity });
     this.entries = new Map();
     this.generation = 0;
+    // Changes between their pre-commit and post-commit hooks; nothing is stored while any is in flight.
+    this.committing = 0;
   }
   // Values are frozen; callers copy before changing them. `missing: false` leaves absent rows uncached, for keys
   // a caller can choose freely.
@@ -26,7 +28,7 @@ export class ConfigCache {
     if (this.entries.has(key)) return this.entries.get(key);
     const generation = this.generation;
     const value = freeze(await load());
-    if (generation === this.generation && (value != null || missing)) {
+    if (generation === this.generation && !this.committing && (value != null || missing)) {
       if (this.entries.size >= this.capacity) this.entries.clear();
       this.entries.set(key, value);
     }
@@ -35,16 +37,27 @@ export class ConfigCache {
   // Marks the current transaction as a configuration change before its first read, so every read in it goes to
   // the database: a change committed just before it may not have dropped its entries yet.
   writing() {
-    this.db.onCommit(() => this.generation++);
+    this.db.onCommit(this.change(() => {}));
   }
-  // Drops `kind:id` and `kind:id:*` once the current transaction commits.
+  // Drops `kind:id` and `kind:id:*` just before the current transaction commits and again after.
   invalidate(kind, id) {
-    this.db.onCommit(() => {
+    const key = kind + ':' + id;
+    this.db.onCommit(
+      this.change(() => {
+        for (const entry of this.entries.keys())
+          if (entry === key || entry.startsWith(key + ':')) this.entries.delete(entry);
+      }),
+    );
+  }
+  // A commit hook: between 'before' and 'after' (or 'rollback') the change counts as in flight, so a value read in
+  // that window, possibly from before the commit, is never stored; each phase also bumps the generation.
+  change(drop) {
+    return phase => {
       this.generation++;
-      const key = kind + ':' + id;
-      for (const entry of this.entries.keys())
-        if (entry === key || entry.startsWith(key + ':')) this.entries.delete(entry);
-    });
+      drop();
+      if (phase === 'before') this.committing++;
+      else this.committing--;
+    };
   }
   invalidateApplication(id) {
     for (const kind of kinds) this.invalidate(kind, id);

@@ -121,7 +121,9 @@ export class Applications {
     if (!validID(body.id) || !this.validName(body.name)) fail(400, 'Invalid application ID or name');
     if (await this.db.prepare('SELECT 1 FROM applications WHERE id=?').get(body.id))
       fail(409, 'Application ID already exists');
-    await this.db.prepare('INSERT INTO applications VALUES(?,?,1,?,NULL)').run(body.id, body.name.trim(), randomUUID());
+    await this.db
+      .prepare('INSERT INTO applications(id,name,enabled,revision) VALUES(?,?,1,?)')
+      .run(body.id, body.name.trim(), randomUUID());
     this.cache.invalidateApplication(body.id);
     await this.saveNotifications(body.id, notifications);
     return await this.describe(body.id);
@@ -154,10 +156,10 @@ export class Applications {
       else
         for (const kind of previous.kinds.filter(kind => !notifications.kinds.includes(kind))) {
           // Keep confirmed grants scoped as issued. Only the disabled kind's work is cancelled.
-          await cancelJobs(this.db, this.now(), 'CapabilityDisabled', 'app_id=? AND kind=?', [id, kind]);
           await this.db
             .prepare('DELETE FROM registrations WHERE app_id=? AND delivery_hash IS NULL AND kinds @> ?::jsonb')
             .run(id, JSON.stringify([kind]));
+          await cancelJobs(this.db, this.now(), 'CapabilityDisabled', 'app_id=? AND kind=?', [id, kind]);
         }
     });
     if (changed) this.channels.invalidate(id);
@@ -179,7 +181,6 @@ export class Applications {
     await this.db.transaction(async () => {
       await this.db.prepare('DELETE FROM app_channels WHERE app_id=? AND kind=?').run(id, kind);
       this.cache.invalidate('channel', id);
-      if (kind === 'apns') await this.db.prepare('UPDATE applications SET secret=NULL WHERE id=?').run(id);
       await this.invalidate(id);
     });
     this.channels.invalidate(id);

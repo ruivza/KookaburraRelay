@@ -149,9 +149,10 @@ export async function createGateway({
     return shutdown;
   };
   try {
-    await db.initialize();
     // Explicit single-owner lock: PostgreSQL migration does not imply distributed workers. The session that holds
-    // it is outside the pool, so it costs no pool slot.
+    // it is outside the pool, so it costs no pool slot. It is taken before migrating, so a gateway refused here
+    // never changes the schema another one is running on.
+    await db.ensureSchema();
     owner = await db.dedicated();
     owner.on('error', () => {
       ownershipLost = true;
@@ -163,17 +164,13 @@ export async function createGateway({
     });
     const lock = await owner.query('SELECT pg_try_advisory_lock(hashtext(current_schema()), 72841102) locked');
     if (!lock.rows[0].locked) throw Error('Another gateway is using this database');
+    await db.initialize();
     const { seal, open } = await loadEncryption(db, dataDir);
     const adminPath = resolve(dataDir, 'admin.token');
     if (adminToken && adminToken.length < 32) throw Error('Gateway admin token must be at least 32 characters');
-    if (!(await db.prepare('SELECT 1 FROM schema_migrations WHERE version=2').get())) {
-      await db.transaction(async () => {
-        await db
-          .prepare('INSERT INTO applications VALUES(?,?,1,?,NULL) ON CONFLICT DO NOTHING')
-          .run(defaultApp, 'Perch Mail', randomUUID());
-        await db.exec('INSERT INTO schema_migrations VALUES(2) ON CONFLICT DO NOTHING');
-      });
-    }
+    // Version 2 marks a gateway whose master key is bound. Before 0.3.0 the first start also created the default
+    // perch-mail application, which those installations keep; new ones create applications in the console.
+    await db.exec('INSERT INTO schema_migrations VALUES(2) ON CONFLICT DO NOTHING');
     const security = new Security({ db, seal, open, now, adminPath });
     await security.initialize(adminToken);
     const backups = new Backups({ db, seal, open, security, now });
@@ -223,21 +220,27 @@ export async function createGateway({
     await db.exec(
       "UPDATE delivery_jobs SET notification=NULL WHERE notification IS NOT NULL AND state IN ('accepted','failed','unknown','cancelled')",
     );
-    // Earlier versions duplicated the sealed APNs key here; app_channels is the only copy read. The master key
-    // check above has already authenticated it.
-    await db.exec('UPDATE applications SET secret=NULL WHERE secret IS NOT NULL');
     const monitorPath = resolve(dataDir, 'monitor.token');
     if (!existsSync(monitorPath)) writeFileSync(monitorPath, randomSecret(), { mode: 0o600, flag: 'wx' });
     const monitorToken = readFileSync(monitorPath, 'utf8').trim();
     // Unauthenticated enrollment keys have their own capped table that refuses new keys when full; operator, login
-    // and sender keys never fail on capacity, the least recently used one is dropped instead.
+    // and sender keys never fail on capacity, the least recently used one is dropped instead. Application and device
+    // send windows exist only once a credential checks out, so they have their own table that a source rotating
+    // through addresses cannot evict.
     const enrollmentKey = /^(enroll-ip|enroll-token|confirm-ip):/;
+    const credentialKey = /^send-(app|device):/;
     const rateLimits = {
       enrollment: new RateLimiter({ capacity: 20000, evict: false, now }),
+      credentials: new RateLimiter({ capacity: 100000, evict: true, now }),
       general: new RateLimiter({ capacity: 100000, evict: true, now }),
     };
     function limit(key, maximum, window = 3600000) {
-      const result = (enrollmentKey.test(key) ? rateLimits.enrollment : rateLimits.general).take(key, maximum, window);
+      const pool = enrollmentKey.test(key)
+        ? rateLimits.enrollment
+        : credentialKey.test(key)
+          ? rateLimits.credentials
+          : rateLimits.general;
+      const result = pool.take(key, maximum, window);
       if (result?.full) abuse.reject('limit_capacity', 60, 503);
       if (result) abuse.reject('source_or_device', result.retryAfter / 1000);
     }

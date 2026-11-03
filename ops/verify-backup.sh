@@ -50,7 +50,7 @@ const url=new URL(process.env.GATEWAY_DATABASE_URL);url.pathname="/"+process.arg
 let app;
 try {
  writeFileSync(dataDir+"/master.key",readFileSync(0),{mode:0o600});
- app=await createGateway({databaseUrl:url.toString(),databaseSchema:"relay",dataDir,adminToken:"restore-verification-only-".repeat(3),autoStart:false});
+ app=await createGateway({databaseUrl:url.toString(),databaseSchema:"relay",dataDir,autoStart:false});
  await app.applications.list();
  await app.applications.channels.verify();
  console.log("Restore verified: PostgreSQL dump, master-key binding and application decryption");
